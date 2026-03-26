@@ -134,5 +134,9 @@ func (t EditFileTool) Execute(ctx context.Context, args map[string]any) *tooling
 	return &tooling.Result{
 		ForModel: fmt.Sprintf("edited file %s; replacements=%d", relativePath, replacements),
 		ForUser:  fmt.Sprintf("Edited %s", relativePath),
+		Metadata: map[string]any{
+			"path":         relativePath,
+			"replacements": replacements,
+		},
 	}
 }

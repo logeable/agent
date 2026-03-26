@@ -84,5 +84,9 @@ func (t WriteFileTool) Execute(ctx context.Context, args map[string]any) *toolin
 	return &tooling.Result{
 		ForModel: fmt.Sprintf("wrote file %s (%d bytes)", relativePath, len(content)),
 		ForUser:  fmt.Sprintf("Wrote %s", relativePath),
+		Metadata: map[string]any{
+			"path":  relativePath,
+			"bytes": len(content),
+		},
 	}
 }

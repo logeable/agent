@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -44,7 +45,7 @@ func main() {
 	flag.StringVar(&baseURL, "base-url", "", "Base URL for OpenAI-compatible providers")
 	flag.StringVar(&apiKey, "api-key", "", "API key for OpenAI-compatible providers")
 	flag.BoolVar(&stream, "stream", true, "Render model delta events when the provider supports streaming")
-	flag.BoolVar(&showEvents, "events", true, "Show key runtime events")
+	flag.BoolVar(&showEvents, "events", false, "Show key runtime events")
 	flag.BoolVar(&autoApprove, "auto-approve", false, "Automatically approve tool approval requests")
 	flag.Parse()
 
@@ -55,6 +56,19 @@ func main() {
 	}
 	loop.Events = agent.NewEventBus()
 	defer loop.Events.Close()
+
+	stdinMessage, err := readMessageFromStdin(os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if strings.TrimSpace(stdinMessage) != "" {
+		if strings.TrimSpace(message) != "" {
+			message = strings.TrimSpace(message) + "\n\n" + strings.TrimSpace(stdinMessage)
+		} else {
+			message = stdinMessage
+		}
+	}
 
 	if strings.TrimSpace(message) != "" {
 		exitCode, err := agentclirun.RunSingleMessage(loop, agentclirun.SingleRunOptions{
@@ -80,6 +94,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func readMessageFromStdin(stdin *os.File) (string, error) {
+	if stdin == nil {
+		return "", nil
+	}
+
+	info, err := stdin.Stat()
+	if err != nil {
+		return "", fmt.Errorf("could not inspect stdin: %w", err)
+	}
+	if info.Mode()&os.ModeCharDevice != 0 {
+		return "", nil
+	}
+
+	data, err := io.ReadAll(stdin)
+	if err != nil {
+		return "", fmt.Errorf("could not read stdin: %w", err)
+	}
+	return string(data), nil
 }
 
 func buildLoop(profilePath, providerKind, modelName, baseURL, apiKey string) (*agent.Loop, error) {

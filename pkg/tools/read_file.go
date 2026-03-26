@@ -106,5 +106,10 @@ func (t ReadFileTool) Execute(ctx context.Context, args map[string]any) *tooling
 	return &tooling.Result{
 		ForModel: modelText,
 		ForUser:  userText,
+		Metadata: map[string]any{
+			"path":      relativePath,
+			"bytes":     len(data),
+			"truncated": truncated,
+		},
 	}
 }
