@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/logeable/agent/pkg/agentcore/tooling"
@@ -31,8 +30,8 @@ import (
 // Those constraints make failures easier for both the model and the user to
 // understand.
 type EditFileTool struct {
-	// RootDir defines the workspace boundary for edits.
-	RootDir string
+	// PathPolicy controls which filesystem paths this tool may access.
+	PathPolicy PathPolicy
 }
 
 func (t EditFileTool) Name() string { return "edit_file" }
@@ -79,7 +78,7 @@ func (t EditFileTool) Execute(_ context.Context, args map[string]any) *tooling.R
 		return tooling.Error("edit_file requires old_string to be non-empty")
 	}
 
-	resolvedPath, err := t.resolvePath(relativePath)
+	resolvedPath, err := t.PathPolicy.ResolvePath(relativePath)
 	if err != nil {
 		return tooling.Error(err.Error())
 	}
@@ -123,32 +122,4 @@ func (t EditFileTool) Execute(_ context.Context, args map[string]any) *tooling.R
 		ForModel: fmt.Sprintf("edited file %s; replacements=%d", relativePath, replacements),
 		ForUser:  fmt.Sprintf("Edited %s", relativePath),
 	}
-}
-
-func (t EditFileTool) resolvePath(relativePath string) (string, error) {
-	rootDir := t.RootDir
-	if strings.TrimSpace(rootDir) == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("edit_file could not resolve working directory: %w", err)
-		}
-		rootDir = cwd
-	}
-
-	absRoot, err := filepath.Abs(rootDir)
-	if err != nil {
-		return "", fmt.Errorf("edit_file could not resolve root %q: %w", rootDir, err)
-	}
-
-	cleanPath := filepath.Clean(relativePath)
-	absPath := filepath.Join(absRoot, cleanPath)
-	rel, err := filepath.Rel(absRoot, absPath)
-	if err != nil {
-		return "", fmt.Errorf("edit_file could not validate path %q: %w", relativePath, err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("edit_file path %q escapes the workspace root", relativePath)
-	}
-
-	return absPath, nil
 }

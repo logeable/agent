@@ -21,8 +21,8 @@ import (
 // than incremental patching when the agent is creating a new file or replacing
 // a generated artifact.
 type WriteFileTool struct {
-	// RootDir defines the workspace boundary for writes.
-	RootDir string
+	// PathPolicy controls which filesystem paths this tool may access.
+	PathPolicy PathPolicy
 }
 
 func (t WriteFileTool) Name() string { return "write_file" }
@@ -55,7 +55,7 @@ func (t WriteFileTool) Execute(_ context.Context, args map[string]any) *tooling.
 		return tooling.Error("write_file requires a non-empty path")
 	}
 
-	resolvedPath, err := t.resolvePath(relativePath)
+	resolvedPath, err := t.PathPolicy.ResolvePath(relativePath)
 	if err != nil {
 		return tooling.Error(err.Error())
 	}
@@ -72,32 +72,4 @@ func (t WriteFileTool) Execute(_ context.Context, args map[string]any) *tooling.
 		ForModel: fmt.Sprintf("wrote file %s (%d bytes)", relativePath, len(content)),
 		ForUser:  fmt.Sprintf("Wrote %s", relativePath),
 	}
-}
-
-func (t WriteFileTool) resolvePath(relativePath string) (string, error) {
-	rootDir := t.RootDir
-	if strings.TrimSpace(rootDir) == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("write_file could not resolve working directory: %w", err)
-		}
-		rootDir = cwd
-	}
-
-	absRoot, err := filepath.Abs(rootDir)
-	if err != nil {
-		return "", fmt.Errorf("write_file could not resolve root %q: %w", rootDir, err)
-	}
-
-	cleanPath := filepath.Clean(relativePath)
-	absPath := filepath.Join(absRoot, cleanPath)
-	rel, err := filepath.Rel(absRoot, absPath)
-	if err != nil {
-		return "", fmt.Errorf("write_file could not validate path %q: %w", relativePath, err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("write_file path %q escapes the workspace root", relativePath)
-	}
-
-	return absPath, nil
 }

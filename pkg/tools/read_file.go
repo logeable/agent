@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/logeable/agent/pkg/agentcore/tooling"
@@ -20,17 +19,11 @@ import (
 // cannot reason reliably about source code or configuration unless it can read
 // the current contents directly from disk.
 //
-// This tool intentionally constrains reads to RootDir. That keeps the contract
-// predictable and prevents the agent from wandering outside the workspace by
-// accident.
+// File access is delegated to PathPolicy so read/edit/write all share the same
+// boundary semantics.
 type ReadFileTool struct {
-	// RootDir is the workspace boundary for file access.
-	//
-	// Why:
-	// Agent tools should default to explicit boundaries. If RootDir is empty, we
-	// fall back to the current working directory because that is the narrowest
-	// sensible default for a local CLI runtime.
-	RootDir string
+	// PathPolicy controls which filesystem paths this tool may access.
+	PathPolicy PathPolicy
 
 	// MaxBytes limits how much content is returned to the model.
 	//
@@ -66,7 +59,7 @@ func (t ReadFileTool) Execute(_ context.Context, args map[string]any) *tooling.R
 		return tooling.Error("read_file requires a non-empty path")
 	}
 
-	resolvedPath, err := t.resolvePath(relativePath)
+	resolvedPath, err := t.PathPolicy.ResolvePath(relativePath)
 	if err != nil {
 		return tooling.Error(err.Error())
 	}
@@ -101,32 +94,4 @@ func (t ReadFileTool) Execute(_ context.Context, args map[string]any) *tooling.R
 		ForModel: modelText,
 		ForUser:  userText,
 	}
-}
-
-func (t ReadFileTool) resolvePath(relativePath string) (string, error) {
-	rootDir := t.RootDir
-	if strings.TrimSpace(rootDir) == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("read_file could not resolve working directory: %w", err)
-		}
-		rootDir = cwd
-	}
-
-	absRoot, err := filepath.Abs(rootDir)
-	if err != nil {
-		return "", fmt.Errorf("read_file could not resolve root %q: %w", rootDir, err)
-	}
-
-	cleanPath := filepath.Clean(relativePath)
-	absPath := filepath.Join(absRoot, cleanPath)
-	rel, err := filepath.Rel(absRoot, absPath)
-	if err != nil {
-		return "", fmt.Errorf("read_file could not validate path %q: %w", relativePath, err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("read_file path %q escapes the workspace root", relativePath)
-	}
-
-	return absPath, nil
 }

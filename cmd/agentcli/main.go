@@ -9,13 +9,9 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/logeable/agent/pkg/agentcore/agent"
-	"github.com/logeable/agent/pkg/agentcore/provider"
-	"github.com/logeable/agent/pkg/agentcore/session"
-	"github.com/logeable/agent/pkg/agentcore/tooling"
-	builtintools "github.com/logeable/agent/pkg/tools"
+	"github.com/logeable/agent/pkg/profile"
 )
 
 // This command is the smallest runnable terminal application for the extracted
@@ -30,17 +26,19 @@ import (
 // - a real OpenAI-compatible model provider
 func main() {
 	var (
-		message    string
-		sessionKey string
-		modelName  string
-		baseURL    string
-		apiKey     string
-		stream     bool
-		showEvents bool
+		message     string
+		sessionKey  string
+		profilePath string
+		modelName   string
+		baseURL     string
+		apiKey      string
+		stream      bool
+		showEvents  bool
 	)
 
 	flag.StringVar(&message, "m", "", "Process a single message and exit")
 	flag.StringVar(&sessionKey, "session", "agentcli:default", "Session key used to preserve conversation state")
+	flag.StringVar(&profilePath, "profile", "", "Path to a profile TOML file")
 	flag.StringVar(&modelName, "model", "", "Model name for the OpenAI-compatible provider")
 	flag.StringVar(&baseURL, "base-url", "", "Base URL for OpenAI-compatible providers")
 	flag.StringVar(&apiKey, "api-key", "", "API key for OpenAI-compatible providers")
@@ -48,7 +46,7 @@ func main() {
 	flag.BoolVar(&showEvents, "events", true, "Print key runtime events to stderr")
 	flag.Parse()
 
-	loop, err := buildLoop(modelName, baseURL, apiKey)
+	loop, err := buildLoop(profilePath, modelName, baseURL, apiKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -66,66 +64,71 @@ func main() {
 	runInteractive(loop, sessionKey, stream)
 }
 
-func buildLoop(modelName, baseURL, apiKey string) (*agent.Loop, error) {
-	registry := tooling.NewRegistry()
+func buildLoop(profilePath, modelName, baseURL, apiKey string) (*agent.Loop, error) {
+	cfgPath := strings.TrimSpace(profilePath)
+	if cfgPath != "" {
+		cfg, err := profile.Load(cfgPath)
+		if err != nil {
+			return nil, err
+		}
+		return cfg.BuildLoop(profile.BuildOptions{
+			BaseURL: baseURL,
+			APIKey:  apiKey,
+			Model:   modelName,
+		})
+	}
 
+	if _, err := os.Stat("agent.toml"); err == nil {
+		cfg, err := profile.Load("agent.toml")
+		if err != nil {
+			return nil, err
+		}
+		return cfg.BuildLoop(profile.BuildOptions{
+			BaseURL: baseURL,
+			APIKey:  apiKey,
+			Model:   modelName,
+		})
+	}
+
+	cfg, err := defaultCLIProfile()
+	if err != nil {
+		return nil, err
+	}
+	return cfg.BuildLoop(profile.BuildOptions{
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+		Model:   modelName,
+	})
+}
+
+func defaultCLIProfile() (*profile.Config, error) {
 	workDir, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("could not resolve current working directory: %w", err)
 	}
-	registry.Register(builtintools.ReadFileTool{
-		RootDir:  workDir,
-		MaxBytes: 128 * 1024,
-	})
-	registry.Register(builtintools.WriteFileTool{
-		RootDir: workDir,
-	})
-	registry.Register(builtintools.EditFileTool{
-		RootDir: workDir,
-	})
-	registry.Register(builtintools.BashTool{
-		WorkDir:        workDir,
-		Timeout:        30 * time.Second,
-		MaxOutputBytes: 64 * 1024,
-	})
 
-	chatModel, resolvedModelName, err := buildModel(modelName, baseURL, apiKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return &agent.Loop{
-		Model:     chatModel,
-		ModelName: resolvedModelName,
-		Tools:     registry,
-		Sessions:  session.NewMemoryStore(),
-		Context: agent.ContextBuilder{
-			SystemPrompt: "You are a tiny teaching agent. Use tools when needed, and keep answers short.",
+	return &profile.Config{
+		Name: "agentcli",
+		Provider: profile.ProviderConfig{
+			Kind: "openai",
+		},
+		Agent: profile.AgentConfig{
+			ID:            "agentcli",
+			SystemPrompt:  profile.DefaultSystemPrompt,
+			WorkDir:       workDir,
+			MaxIterations: agent.DefaultMaxIterations,
+		},
+		Tools: profile.ToolsConfig{
+			Enabled: []string{"read_file", "edit_file", "write_file", "bash"},
+			ReadFile: profile.ReadFileToolConfig{
+				MaxBytes: 128 * 1024,
+			},
+			Bash: profile.BashToolConfig{
+				TimeoutMS:      30_000,
+				MaxOutputBytes: 64 * 1024,
+			},
 		},
 	}, nil
-}
-
-func buildModel(modelName, baseURL, apiKey string) (provider.ChatModel, string, error) {
-	resolvedBaseURL := firstNonEmpty(baseURL, os.Getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1")
-	resolvedAPIKey := firstNonEmpty(apiKey, os.Getenv("OPENAI_API_KEY"))
-	resolvedModel := firstNonEmpty(modelName, os.Getenv("OPENAI_MODEL"))
-
-	if resolvedAPIKey == "" {
-		return nil, "", fmt.Errorf("OPENAI_API_KEY or -api-key is required")
-	}
-	if resolvedModel == "" {
-		return nil, "", fmt.Errorf("OPENAI_MODEL or -model is required")
-	}
-
-	model, err := provider.NewOpenAICompatModel(provider.OpenAICompatConfig{
-		BaseURL: resolvedBaseURL,
-		APIKey:  resolvedAPIKey,
-		Model:   resolvedModel,
-	})
-	if err != nil {
-		return nil, "", err
-	}
-	return model, resolvedModel, nil
 }
 
 func runSingleMessage(loop *agent.Loop, sessionKey, message string, stream bool) {
@@ -174,16 +177,6 @@ func runInteractive(loop *agent.Loop, sessionKey string, stream bool) {
 			fmt.Printf("%s\n", resp)
 		}
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func startStreamingPrinter(events *agent.EventBus, enabled bool) func() bool {

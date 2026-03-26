@@ -191,6 +191,10 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 
 	// Hitting the cap means the loop never converged to a final answer.
 	finalStatus = TurnStatusError
+	l.emit(turnMeta.withIteration(maxIterations), EventError, ErrorPayload{
+		Stage:   "max_iterations",
+		Message: fmt.Sprintf("max iterations exceeded (%d)", maxIterations),
+	})
 	return "", fmt.Errorf("max iterations exceeded")
 }
 
