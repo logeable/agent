@@ -109,7 +109,8 @@ func defaultCLIProfile() (*profile.Config, error) {
 		},
 		Agent: profile.AgentConfig{
 			ID:            "agentcli",
-			SystemPrompt:  profile.DefaultSystemPrompt,
+			Identity:      profile.BuildDefaultIdentity(),
+			Soul:          profile.BuildDefaultSoul(),
 			MaxIterations: agent.DefaultMaxIterations,
 		},
 		Tools: profile.ToolsConfig{

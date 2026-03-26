@@ -3,6 +3,7 @@ package profile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,7 +20,8 @@ model = "gpt-5"
 
 [agent]
 id = "coding-agent"
-system_prompt = "Be precise."
+identity = "You are precise."
+soul = "Prefer inspection before changes."
 max_iterations = 12
 
 [files]
@@ -56,14 +58,38 @@ shell = "/bin/sh"
 	if loop.ModelName != "gpt-5" {
 		t.Fatalf("ModelName = %q, want %q", loop.ModelName, "gpt-5")
 	}
-	if loop.Context.SystemPrompt != "Be precise." {
-		t.Fatalf("SystemPrompt = %q, want %q", loop.Context.SystemPrompt, "Be precise.")
+	if !strings.Contains(loop.Context.SystemPrompt, "You are precise.") {
+		t.Fatalf("SystemPrompt missing identity, got %q", loop.Context.SystemPrompt)
+	}
+	if !strings.Contains(loop.Context.SystemPrompt, "Prefer inspection before changes.") {
+		t.Fatalf("SystemPrompt missing soul, got %q", loop.Context.SystemPrompt)
+	}
+	if !strings.Contains(loop.Context.SystemPrompt, "# Environment") {
+		t.Fatalf("SystemPrompt missing environment section, got %q", loop.Context.SystemPrompt)
 	}
 	if loop.MaxIterations != 12 {
 		t.Fatalf("MaxIterations = %d, want 12", loop.MaxIterations)
 	}
 	if len(loop.Tools.Definitions()) != 2 {
 		t.Fatalf("tool definitions = %d, want 2", len(loop.Tools.Definitions()))
+	}
+}
+
+func TestBuildSystemPromptUsesDefaults(t *testing.T) {
+	prompt := BuildSystemPrompt("", "", EnvironmentInfo{
+		WorkDir:      "/tmp/project",
+		FilesScope:   "workspace",
+		EnabledTools: []string{"read_file", "bash"},
+	})
+
+	if !strings.Contains(prompt, "# Identity") {
+		t.Fatalf("prompt missing identity section: %q", prompt)
+	}
+	if !strings.Contains(prompt, "# Soul") {
+		t.Fatalf("prompt missing soul section: %q", prompt)
+	}
+	if !strings.Contains(prompt, "/tmp/project") {
+		t.Fatalf("prompt missing workdir: %q", prompt)
 	}
 }
 

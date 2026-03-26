@@ -15,12 +15,104 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// DefaultSystemPrompt is used when a profile does not provide its own prompt.
+// BuildDefaultIdentity returns the default identity block for an agent profile.
 //
 // Why:
-// A profile should be able to omit boilerplate and still build a usable agent
-// instance. Keeping the default here makes that behavior explicit and testable.
-const DefaultSystemPrompt = "You are a focused coding agent. Use tools when needed, and keep answers short."
+// Identity answers "what kind of agent is this?" and should remain stable
+// across many tasks. It is different from the deeper behavioral rules in Soul.
+func BuildDefaultIdentity() string {
+	return strings.TrimSpace(`
+You are a local coding agent operating in the current workspace.
+Your job is to understand the current state, make targeted changes when asked,
+and verify outcomes with tools when needed.
+`)
+}
+
+// BuildDefaultSoul returns the default behavioral rules for an agent profile.
+//
+// Why:
+// Soul captures the durable working method of the agent: how it should inspect,
+// decide, act, and report. Keeping this separate from Identity makes the prompt
+// easier to reason about and easier to override intentionally.
+func BuildDefaultSoul() string {
+	return strings.TrimSpace(`
+Understand the current state before making changes.
+Prefer reading files and inspecting command output over guessing.
+Use the smallest action that makes meaningful progress.
+Use read_file to inspect, edit_file for targeted edits, write_file for full-file creation or replacement, and bash for inspection, search, build, or test commands.
+Do not loop on tool calls without new information or a concrete recovery attempt.
+If a tool fails, report the failure clearly and adjust the plan instead of hiding it.
+Be concise, direct, and factual in user-facing output.
+`)
+}
+
+// EnvironmentInfo carries the minimum runtime facts that should be surfaced in
+// the generated system prompt.
+//
+// Why:
+// The agent should know its operating boundary, but we want to keep these facts
+// structured at build time rather than hard-coding runtime details into profile
+// files.
+type EnvironmentInfo struct {
+	WorkDir       string
+	FilesScope    string
+	FileRoots     []string
+	EnabledTools  []string
+	MaxIterations int
+}
+
+// BuildSystemPrompt composes the final system prompt from identity, soul, and
+// the current runtime environment.
+//
+// Why:
+// This keeps prompt construction explicit and layered. Identity and Soul come
+// from the profile, while Environment comes from the actual instantiated agent.
+func BuildSystemPrompt(identity, soul string, env EnvironmentInfo) string {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		identity = BuildDefaultIdentity()
+	}
+
+	soul = strings.TrimSpace(soul)
+	if soul == "" {
+		soul = BuildDefaultSoul()
+	}
+
+	scope := strings.TrimSpace(env.FilesScope)
+	if scope == "" {
+		scope = string(builtintools.PathScopeWorkspace)
+	}
+
+	enabledTools := "none"
+	if len(env.EnabledTools) > 0 {
+		enabledTools = strings.Join(env.EnabledTools, ", ")
+	}
+
+	fileRoots := "current working directory"
+	if len(env.FileRoots) > 0 {
+		fileRoots = strings.Join(env.FileRoots, ", ")
+	}
+
+	maxIterations := env.MaxIterations
+	if maxIterations <= 0 {
+		maxIterations = agent.DefaultMaxIterations
+	}
+
+	environment := strings.TrimSpace(fmt.Sprintf(`
+# Environment
+Current working directory: %s
+File access scope: %s
+Allowed file roots: %s
+Enabled tools: %s
+Max tool-call iterations per turn: %d
+`, env.WorkDir, scope, fileRoots, enabledTools, maxIterations))
+
+	return strings.Join([]string{
+		"# Identity\n" + identity,
+		"# Soul\n" + soul,
+		environment,
+	}, "\n\n---\n\n")
+}
 
 // Config is the top-level profile document.
 //
@@ -51,7 +143,8 @@ type ProviderConfig struct {
 // AgentConfig declares instance-level runtime parameters.
 type AgentConfig struct {
 	ID            string `toml:"id"`
-	SystemPrompt  string `toml:"system_prompt"`
+	Identity      string `toml:"identity"`
+	Soul          string `toml:"soul"`
 	MaxIterations int    `toml:"max_iterations"`
 }
 
@@ -182,10 +275,18 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		return nil, err
 	}
 
-	systemPrompt := strings.TrimSpace(c.Agent.SystemPrompt)
-	if systemPrompt == "" {
-		systemPrompt = DefaultSystemPrompt
+	pathPolicy, err := c.buildPathPolicy(workDir)
+	if err != nil {
+		return nil, err
 	}
+
+	systemPrompt := BuildSystemPrompt(c.Agent.Identity, c.Agent.Soul, EnvironmentInfo{
+		WorkDir:       workDir,
+		FilesScope:    string(pathPolicy.Scope),
+		FileRoots:     append([]string(nil), pathPolicy.Roots...),
+		EnabledTools:  c.enabledTools(),
+		MaxIterations: c.Agent.MaxIterations,
+	})
 
 	return &agent.Loop{
 		Model:         model,
