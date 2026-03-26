@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/logeable/agent/internal/agentclirun"
@@ -27,7 +28,7 @@ func main() {
 	var (
 		message      string
 		sessionKey   string
-		profilePath  string
+		profileName  string
 		providerKind string
 		modelName    string
 		baseURL      string
@@ -39,7 +40,7 @@ func main() {
 
 	flag.StringVar(&message, "m", "", "Process a single message and exit")
 	flag.StringVar(&sessionKey, "session", "agentcli:default", "Session key used to preserve conversation state")
-	flag.StringVar(&profilePath, "profile", "", "Path to a profile TOML file")
+	flag.StringVar(&profileName, "profile", "agent", "Profile name or path")
 	flag.StringVar(&providerKind, "provider", "", "Provider kind to use: openai or openai_response")
 	flag.StringVar(&modelName, "model", "", "Model name for the OpenAI-compatible provider")
 	flag.StringVar(&baseURL, "base-url", "", "Base URL for OpenAI-compatible providers")
@@ -49,7 +50,7 @@ func main() {
 	flag.BoolVar(&autoApprove, "auto-approve", false, "Automatically approve tool approval requests")
 	flag.Parse()
 
-	loop, err := buildLoop(profilePath, providerKind, modelName, baseURL, apiKey)
+	loop, err := buildLoop(profileName, providerKind, modelName, baseURL, apiKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -116,8 +117,11 @@ func readMessageFromStdin(stdin *os.File) (string, error) {
 	return string(data), nil
 }
 
-func buildLoop(profilePath, providerKind, modelName, baseURL, apiKey string) (*agent.Loop, error) {
-	cfgPath := strings.TrimSpace(profilePath)
+func buildLoop(profileName, providerKind, modelName, baseURL, apiKey string) (*agent.Loop, error) {
+	cfgPath, err := resolveProfileArgument(profileName)
+	if err != nil {
+		return nil, err
+	}
 	if cfgPath != "" {
 		cfg, err := profile.Load(cfgPath)
 		if err != nil {
@@ -154,6 +158,41 @@ func buildLoop(profilePath, providerKind, modelName, baseURL, apiKey string) (*a
 		APIKey:       apiKey,
 		Model:        modelName,
 	})
+}
+
+func resolveProfileArgument(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not resolve home directory for profile lookup: %w", err)
+	}
+	return resolveProfileArgumentWithHome(value, homeDir), nil
+}
+
+func resolveProfileArgumentWithHome(value, homeDir string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+
+	// Names are the ergonomic default for day-to-day CLI use. We only treat
+	// simple values as names; anything with a path separator is assumed to be a
+	// real path and skips the name lookup.
+	if !filepath.IsAbs(trimmed) && !strings.ContainsRune(trimmed, filepath.Separator) {
+		name := strings.TrimSuffix(trimmed, ".toml")
+		if homeDir != "" {
+			candidate := filepath.Join(homeDir, ".agentcli", name+".toml")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+	}
+
+	return trimmed
 }
 
 func defaultCLIProfile() (*profile.Config, error) {
