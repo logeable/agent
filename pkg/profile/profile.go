@@ -187,9 +187,10 @@ type WebFetchToolConfig struct {
 // A profile should define the default instance shape, but the CLI still needs a
 // small escape hatch for one-off overrides such as a different API key or model.
 type BuildOptions struct {
-	BaseURL string
-	APIKey  string
-	Model   string
+	ProviderKind string
+	BaseURL      string
+	APIKey       string
+	Model        string
 }
 
 // Load reads and parses a TOML profile file.
@@ -224,7 +225,7 @@ func (c *Config) Validate() error {
 	if providerKind == "" {
 		providerKind = "openai"
 	}
-	if providerKind != "openai" {
+	if providerKind != "openai" && providerKind != "openai_response" {
 		return fmt.Errorf("unsupported provider kind %q", c.Provider.Kind)
 	}
 
@@ -306,6 +307,10 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 }
 
 func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, error) {
+	kind := strings.ToLower(strings.TrimSpace(firstNonEmpty(opts.ProviderKind, c.Provider.Kind)))
+	if kind == "" {
+		kind = "openai"
+	}
 	baseURL := firstNonEmpty(opts.BaseURL, c.Provider.BaseURL, os.Getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1")
 	apiKeyEnv := firstNonEmpty(c.Provider.APIKeyEnv, "OPENAI_API_KEY")
 	apiKey := firstNonEmpty(opts.APIKey, c.Provider.APIKey, os.Getenv(apiKeyEnv))
@@ -318,15 +323,30 @@ func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, erro
 		return nil, "", fmt.Errorf("provider model is required")
 	}
 
-	model, err := provider.NewOpenAICompatModel(provider.OpenAICompatConfig{
-		BaseURL: baseURL,
-		APIKey:  apiKey,
-		Model:   modelName,
-	})
-	if err != nil {
-		return nil, "", err
+	switch kind {
+	case "openai":
+		model, err := provider.NewOpenAICompatModel(provider.OpenAICompatConfig{
+			BaseURL: baseURL,
+			APIKey:  apiKey,
+			Model:   modelName,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return model, modelName, nil
+	case "openai_response":
+		model, err := provider.NewOpenAIResponseModel(provider.OpenAIResponseConfig{
+			BaseURL: baseURL,
+			APIKey:  apiKey,
+			Model:   modelName,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return model, modelName, nil
+	default:
+		return nil, "", fmt.Errorf("unsupported provider kind %q", c.Provider.Kind)
 	}
-	return model, modelName, nil
 }
 
 func (c *Config) buildRegistry(workDir string) (*tooling.Registry, error) {

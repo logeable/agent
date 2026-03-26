@@ -26,19 +26,21 @@ import (
 // - a real OpenAI-compatible model provider
 func main() {
 	var (
-		message     string
-		sessionKey  string
-		profilePath string
-		modelName   string
-		baseURL     string
-		apiKey      string
-		stream      bool
-		showEvents  bool
+		message      string
+		sessionKey   string
+		profilePath  string
+		providerKind string
+		modelName    string
+		baseURL      string
+		apiKey       string
+		stream       bool
+		showEvents   bool
 	)
 
 	flag.StringVar(&message, "m", "", "Process a single message and exit")
 	flag.StringVar(&sessionKey, "session", "agentcli:default", "Session key used to preserve conversation state")
 	flag.StringVar(&profilePath, "profile", "", "Path to a profile TOML file")
+	flag.StringVar(&providerKind, "provider", "", "Provider kind to use: openai or openai_response")
 	flag.StringVar(&modelName, "model", "", "Model name for the OpenAI-compatible provider")
 	flag.StringVar(&baseURL, "base-url", "", "Base URL for OpenAI-compatible providers")
 	flag.StringVar(&apiKey, "api-key", "", "API key for OpenAI-compatible providers")
@@ -46,7 +48,7 @@ func main() {
 	flag.BoolVar(&showEvents, "events", true, "Print key runtime events to stderr")
 	flag.Parse()
 
-	loop, err := buildLoop(profilePath, modelName, baseURL, apiKey)
+	loop, err := buildLoop(profilePath, providerKind, modelName, baseURL, apiKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -64,7 +66,7 @@ func main() {
 	runInteractive(loop, sessionKey, stream)
 }
 
-func buildLoop(profilePath, modelName, baseURL, apiKey string) (*agent.Loop, error) {
+func buildLoop(profilePath, providerKind, modelName, baseURL, apiKey string) (*agent.Loop, error) {
 	cfgPath := strings.TrimSpace(profilePath)
 	if cfgPath != "" {
 		cfg, err := profile.Load(cfgPath)
@@ -72,9 +74,10 @@ func buildLoop(profilePath, modelName, baseURL, apiKey string) (*agent.Loop, err
 			return nil, err
 		}
 		return cfg.BuildLoop(profile.BuildOptions{
-			BaseURL: baseURL,
-			APIKey:  apiKey,
-			Model:   modelName,
+			ProviderKind: providerKind,
+			BaseURL:      baseURL,
+			APIKey:       apiKey,
+			Model:        modelName,
 		})
 	}
 
@@ -84,9 +87,10 @@ func buildLoop(profilePath, modelName, baseURL, apiKey string) (*agent.Loop, err
 			return nil, err
 		}
 		return cfg.BuildLoop(profile.BuildOptions{
-			BaseURL: baseURL,
-			APIKey:  apiKey,
-			Model:   modelName,
+			ProviderKind: providerKind,
+			BaseURL:      baseURL,
+			APIKey:       apiKey,
+			Model:        modelName,
 		})
 	}
 
@@ -95,9 +99,10 @@ func buildLoop(profilePath, modelName, baseURL, apiKey string) (*agent.Loop, err
 		return nil, err
 	}
 	return cfg.BuildLoop(profile.BuildOptions{
-		BaseURL: baseURL,
-		APIKey:  apiKey,
-		Model:   modelName,
+		ProviderKind: providerKind,
+		BaseURL:      baseURL,
+		APIKey:       apiKey,
+		Model:        modelName,
 	})
 }
 

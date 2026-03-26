@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/logeable/agent/pkg/agentcore/provider"
 )
 
 func TestLoadAndBuildLoop(t *testing.T) {
@@ -127,6 +129,27 @@ func TestBuildLoopAllowsModelFromOverride(t *testing.T) {
 	}
 	if loop.ModelName != "gpt-5" {
 		t.Fatalf("ModelName = %q, want %q", loop.ModelName, "gpt-5")
+	}
+}
+
+func TestBuildLoopAllowsProviderKindOverride(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{
+			Kind:   "openai",
+			APIKey: "dummy-key",
+			Model:  "gpt-5",
+		},
+	}
+
+	loop, err := cfg.BuildLoop(BuildOptions{
+		ProviderKind: "openai_response",
+		BaseURL:      "https://api.openai.com/v1",
+	})
+	if err != nil {
+		t.Fatalf("BuildLoop() error = %v", err)
+	}
+	if _, ok := loop.Model.(*provider.OpenAIResponseModel); !ok {
+		t.Fatalf("loop.Model = %T, want *provider.OpenAIResponseModel", loop.Model)
 	}
 }
 
