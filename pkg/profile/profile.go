@@ -354,7 +354,7 @@ func (c *Config) buildRegistry(workDir string) (*tooling.Registry, error) {
 		case "bash":
 			registry.Register(builtintools.BashTool{
 				WorkDir:        workDir,
-				Timeout:        time.Duration(positiveInt64OrDefault(c.Tools.Bash.TimeoutMS, 30_000)) * time.Millisecond,
+				Timeout:        time.Duration(positiveInt64OrDefault(c.Tools.Bash.TimeoutMS, 60_000)) * time.Millisecond,
 				MaxOutputBytes: positiveIntOrDefault(c.Tools.Bash.MaxOutputBytes, 64*1024),
 				Shell:          strings.TrimSpace(c.Tools.Bash.Shell),
 			})

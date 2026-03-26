@@ -91,7 +91,7 @@ func (t BashTool) Execute(ctx context.Context, args map[string]any) *tooling.Res
 
 	timeout := t.Timeout
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 60 * time.Second
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
