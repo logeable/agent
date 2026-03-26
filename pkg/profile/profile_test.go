@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -205,5 +206,118 @@ func TestValidateRejectsNegativeMaxIterations(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("Validate() error = nil, want non-nil")
+	}
+}
+
+func TestResolvedSkillRootsExpandsVariables(t *testing.T) {
+	tempDir := t.TempDir()
+	homeDir := filepath.Join(tempDir, "home")
+	profileDir := filepath.Join(tempDir, "profiles")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	t.Setenv("HOME", homeDir)
+
+	cfg := &Config{
+		Skills: SkillsConfig{
+			Roots: []string{"${HOME}/skills", "${CWD}/local-skills", "${PROFILE_DIR}/bundle"},
+		},
+		sourcePath: filepath.Join(profileDir, "agent.toml"),
+	}
+
+	roots, err := cfg.resolvedSkillRoots("/ignored")
+	if err != nil {
+		t.Fatalf("resolvedSkillRoots() error = %v", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	want := []string{
+		filepath.Join(homeDir, "skills"),
+		filepath.Join(cwd, "local-skills"),
+		filepath.Join(profileDir, "bundle"),
+	}
+	for i := range want {
+		if roots[i] != want[i] {
+			t.Fatalf("roots[%d] = %q, want %q", i, roots[i], want[i])
+		}
+	}
+}
+
+func TestResolvedFileRootsExpandsTilde(t *testing.T) {
+	tempDir := t.TempDir()
+	homeDir := filepath.Join(tempDir, "home")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	t.Setenv("HOME", homeDir)
+
+	cfg := &Config{
+		Files: FilesConfig{
+			Scope: "explicit",
+			Roots: []string{"~/workspace"},
+		},
+	}
+
+	roots, err := cfg.resolvedFileRoots()
+	if err != nil {
+		t.Fatalf("resolvedFileRoots() error = %v", err)
+	}
+	if len(roots) != 1 {
+		t.Fatalf("root count = %d, want 1", len(roots))
+	}
+	if roots[0] != filepath.Join(homeDir, "workspace") {
+		t.Fatalf("root = %q, want %q", roots[0], filepath.Join(homeDir, "workspace"))
+	}
+}
+
+func TestBuildLoopAllowsReadingSkillFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	skillDir := filepath.Join(tempDir, "skills", "find-skills")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("# Find Skills\nUse this skill."), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg := &Config{
+		Provider: ProviderConfig{
+			Kind:   "openai",
+			APIKey: "dummy-key",
+			Model:  "gpt-5",
+		},
+		Files: FilesConfig{
+			Scope: "workspace",
+		},
+		Skills: SkillsConfig{
+			Roots: []string{filepath.Join(tempDir, "skills")},
+		},
+		Tools: ToolsConfig{
+			Enabled: []string{"read_file"},
+		},
+	}
+
+	loop, err := cfg.BuildLoop(BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildLoop() error = %v", err)
+	}
+
+	result := loop.Tools.Execute(context.Background(), "read_file", map[string]any{
+		"path": skillPath,
+	})
+	if result == nil || result.IsError {
+		t.Fatalf("read_file result = %#v, want success", result)
+	}
+	if !strings.Contains(result.ForModel, "Use this skill.") {
+		t.Fatalf("ForModel = %q, want skill file content", result.ForModel)
 	}
 }

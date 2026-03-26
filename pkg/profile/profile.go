@@ -133,6 +133,8 @@ type Config struct {
 	Files    FilesConfig    `toml:"files"`
 	Skills   SkillsConfig   `toml:"skills"`
 	Tools    ToolsConfig    `toml:"tools"`
+
+	sourcePath string
 }
 
 // ProviderConfig declares how the agent talks to a model provider.
@@ -225,6 +227,7 @@ func Load(path string) (*Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	cfg.sourcePath = path
 	return &cfg, nil
 }
 
@@ -288,12 +291,12 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		return nil, err
 	}
 
-	registry, err := c.buildRegistry(workDir)
+	pathPolicy, err := c.buildFileToolPathPolicy(workDir)
 	if err != nil {
 		return nil, err
 	}
 
-	pathPolicy, err := c.buildPathPolicy(workDir)
+	registry, err := c.buildRegistry(workDir, pathPolicy)
 	if err != nil {
 		return nil, err
 	}
@@ -367,12 +370,8 @@ func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, erro
 	}
 }
 
-func (c *Config) buildRegistry(workDir string) (*tooling.Registry, error) {
+func (c *Config) buildRegistry(workDir string, pathPolicy builtintools.PathPolicy) (*tooling.Registry, error) {
 	registry := tooling.NewRegistry()
-	pathPolicy, err := c.buildPathPolicy(workDir)
-	if err != nil {
-		return nil, err
-	}
 
 	for _, name := range c.enabledTools() {
 		switch name {
@@ -440,6 +439,45 @@ func (c *Config) buildPathPolicy(workDir string) (builtintools.PathPolicy, error
 	}
 }
 
+// buildFileToolPathPolicy returns the path policy used by read/edit/write.
+//
+// Why:
+// Skills are advertised to the agent as files it can inspect. If the runtime
+// surfaces a SKILL.md path in the prompt, file tools must be able to read it.
+// We therefore widen the file-tool roots with resolved skill roots when the
+// policy is root-based.
+func (c *Config) buildFileToolPathPolicy(workDir string) (builtintools.PathPolicy, error) {
+	basePolicy, err := c.buildPathPolicy(workDir)
+	if err != nil {
+		return builtintools.PathPolicy{}, err
+	}
+	if basePolicy.Scope == builtintools.PathScopeAny {
+		return basePolicy, nil
+	}
+
+	skillRoots, err := c.resolvedSkillRoots(workDir)
+	if err != nil {
+		return builtintools.PathPolicy{}, err
+	}
+	if len(skillRoots) == 0 {
+		return basePolicy, nil
+	}
+
+	mergedRoots := append([]string(nil), basePolicy.Roots...)
+	for _, root := range skillRoots {
+		root = strings.TrimSpace(root)
+		if root == "" || containsPath(mergedRoots, root) {
+			continue
+		}
+		mergedRoots = append(mergedRoots, root)
+	}
+
+	return builtintools.PathPolicy{
+		Scope: builtintools.PathScopeExplicit,
+		Roots: mergedRoots,
+	}, nil
+}
+
 func (c *Config) buildSkillsSummary(workDir string) (string, error) {
 	if c.Skills.Enabled != nil && !*c.Skills.Enabled {
 		return "", nil
@@ -465,18 +503,14 @@ func (c *Config) resolvedSkillRoots(workDir string) ([]string, error) {
 
 	out := make([]string, 0, len(roots))
 	for _, root := range roots {
-		root = strings.TrimSpace(root)
-		if root == "" {
-			continue
-		}
-		if !filepath.IsAbs(root) {
-			root = filepath.Join(workDir, root)
-		}
-		absRoot, err := filepath.Abs(root)
+		resolved, err := c.expandPath(root)
 		if err != nil {
 			return nil, fmt.Errorf("could not resolve skill root %q: %w", root, err)
 		}
-		out = append(out, absRoot)
+		if resolved == "" {
+			continue
+		}
+		out = append(out, resolved)
 	}
 	return out, nil
 }
@@ -515,30 +549,73 @@ func (c *Config) resolvedFileRoots() ([]string, error) {
 		return nil, fmt.Errorf("files.scope=explicit requires at least one root")
 	}
 
-	baseDir, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("could not resolve working directory: %w", err)
-	}
-
 	roots := make([]string, 0, len(c.Files.Roots))
 	for _, root := range c.Files.Roots {
-		root = strings.TrimSpace(root)
-		if root == "" {
-			continue
-		}
-		if !filepath.IsAbs(root) {
-			root = filepath.Join(baseDir, root)
-		}
-		absRoot, err := filepath.Abs(root)
+		resolved, err := c.expandPath(root)
 		if err != nil {
 			return nil, fmt.Errorf("could not resolve files root %q: %w", root, err)
 		}
-		roots = append(roots, absRoot)
+		if resolved == "" {
+			continue
+		}
+		roots = append(roots, resolved)
 	}
 	if len(roots) == 0 {
 		return nil, fmt.Errorf("files.scope=explicit requires at least one non-empty root")
 	}
 	return roots, nil
+}
+
+func (c *Config) expandPath(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("could not resolve working directory: %w", err)
+	}
+
+	profileDir := cwd
+	if strings.TrimSpace(c.sourcePath) != "" {
+		profileDir = filepath.Dir(c.sourcePath)
+	}
+
+	if strings.HasPrefix(value, "~") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("could not resolve home directory: %w", err)
+		}
+		switch value {
+		case "~":
+			value = home
+		default:
+			if strings.HasPrefix(value, "~/") || strings.HasPrefix(value, "~"+string(filepath.Separator)) {
+				value = filepath.Join(home, value[2:])
+			}
+		}
+	}
+
+	replacer := strings.NewReplacer(
+		"${HOME}", os.Getenv("HOME"),
+		"$HOME", os.Getenv("HOME"),
+		"${CWD}", cwd,
+		"$CWD", cwd,
+		"${PROFILE_DIR}", profileDir,
+		"$PROFILE_DIR", profileDir,
+	)
+	value = replacer.Replace(value)
+
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(cwd, value)
+	}
+
+	absValue, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	return absValue, nil
 }
 
 func isSupportedTool(name string) bool {
@@ -572,4 +649,13 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func containsPath(paths []string, target string) bool {
+	for _, path := range paths {
+		if path == target {
+			return true
+		}
+	}
+	return false
 }
