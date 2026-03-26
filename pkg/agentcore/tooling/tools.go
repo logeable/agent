@@ -41,6 +41,7 @@ type Result struct {
 	ForUser  string
 	IsError  bool
 	Err      error
+	Metadata map[string]any
 }
 
 // ContentForModel returns the safest fallback payload to place into a tool message.

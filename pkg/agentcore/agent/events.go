@@ -118,6 +118,8 @@ type ToolFinishedPayload struct {
 	ForModel    string
 	IsError     bool
 	UserPreview string
+	ErrorText   string
+	Metadata    map[string]any
 }
 
 // ErrorPayload describes an execution error at some stage of the loop.

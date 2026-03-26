@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -118,31 +119,50 @@ func (t BashTool) Execute(ctx context.Context, args map[string]any) *tooling.Res
 	if outputBuffer.truncated {
 		output += fmt.Sprintf("\n[output truncated to %d bytes]", limit)
 	}
+	rawOutputBytes := len(outputBuffer.data)
+
+	metadata := map[string]any{
+		"command":       command,
+		"workdir":       absWorkDir,
+		"output_bytes":  rawOutputBytes,
+		"truncated":     outputBuffer.truncated,
+		"timeout_ms":    timeout.Milliseconds(),
+		"shell":         shell,
+		"timed_out":     false,
+		"exit_code":     0,
+		"output_sample": truncateOutputPreview(outputBuffer.String(), 200),
+	}
 
 	modelText := fmt.Sprintf("command: %s\nworkdir: %s\noutput:\n%s", command, absWorkDir, output)
 	userText := fmt.Sprintf("Ran bash command in %s", absWorkDir)
 
 	if runCtx.Err() == context.DeadlineExceeded {
+		metadata["timed_out"] = true
+		metadata["exit_code"] = -1
 		return &tooling.Result{
 			ForModel: modelText + "\nstatus: timed out",
 			ForUser:  userText + " (timed out)",
 			IsError:  true,
 			Err:      runCtx.Err(),
+			Metadata: metadata,
 		}
 	}
 
 	if err != nil {
+		metadata["exit_code"] = extractExitCode(err)
 		return &tooling.Result{
 			ForModel: modelText + fmt.Sprintf("\nstatus: failed: %v", err),
 			ForUser:  userText + " (failed)",
 			IsError:  true,
 			Err:      err,
+			Metadata: metadata,
 		}
 	}
 
 	return &tooling.Result{
 		ForModel: modelText + "\nstatus: ok",
 		ForUser:  userText,
+		Metadata: metadata,
 	}
 }
 
@@ -175,4 +195,23 @@ func (b *limitedOutputBuffer) Write(p []byte) (int, error) {
 
 func (b *limitedOutputBuffer) String() string {
 	return string(b.data)
+}
+
+func extractExitCode(err error) int {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return -1
+	}
+	return exitErr.ExitCode()
+}
+
+func truncateOutputPreview(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return value[:limit]
+	}
+	return value[:limit-3] + "..."
 }

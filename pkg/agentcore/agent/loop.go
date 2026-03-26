@@ -183,6 +183,8 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 				ForModel:    toolMsg.Content,
 				IsError:     result.IsError,
 				UserPreview: result.ForUser,
+				ErrorText:   errorText(result),
+				Metadata:    result.Metadata,
 			})
 		}
 	}
@@ -244,4 +246,11 @@ func EncodeToolArguments(arguments map[string]any) string {
 		return "{}"
 	}
 	return string(data)
+}
+
+func errorText(result *tooling.Result) string {
+	if result == nil || result.Err == nil {
+		return ""
+	}
+	return result.Err.Error()
 }
