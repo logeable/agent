@@ -37,8 +37,6 @@ type Config struct {
 	Agent    AgentConfig    `toml:"agent"`
 	Files    FilesConfig    `toml:"files"`
 	Tools    ToolsConfig    `toml:"tools"`
-
-	sourcePath string
 }
 
 // ProviderConfig declares how the agent talks to a model provider.
@@ -54,7 +52,6 @@ type ProviderConfig struct {
 type AgentConfig struct {
 	ID            string `toml:"id"`
 	SystemPrompt  string `toml:"system_prompt"`
-	WorkDir       string `toml:"workdir"`
 	MaxIterations int    `toml:"max_iterations"`
 }
 
@@ -113,12 +110,6 @@ func Load(path string) (*Config, error) {
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("could not parse profile %q: %w", path, err)
 	}
-
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return nil, fmt.Errorf("could not resolve profile path %q: %w", path, err)
-	}
-	cfg.sourcePath = absPath
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -322,31 +313,11 @@ func (c *Config) enabledTools() []string {
 }
 
 func (c *Config) resolvedWorkDir() (string, error) {
-	workDir := strings.TrimSpace(c.Agent.WorkDir)
-	if workDir == "" {
-		workDir = "."
-	}
-
-	baseDir := ""
-	if c.sourcePath != "" {
-		baseDir = filepath.Dir(c.sourcePath)
-	}
-	if baseDir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("could not resolve working directory: %w", err)
-		}
-		baseDir = cwd
-	}
-
-	if !filepath.IsAbs(workDir) {
-		workDir = filepath.Join(baseDir, workDir)
-	}
-	absWorkDir, err := filepath.Abs(workDir)
+	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("could not resolve profile workdir %q: %w", workDir, err)
+		return "", fmt.Errorf("could not resolve working directory: %w", err)
 	}
-	return absWorkDir, nil
+	return cwd, nil
 }
 
 func (c *Config) resolvedFileRoots() ([]string, error) {
@@ -354,16 +325,9 @@ func (c *Config) resolvedFileRoots() ([]string, error) {
 		return nil, fmt.Errorf("files.scope=explicit requires at least one root")
 	}
 
-	baseDir := ""
-	if c.sourcePath != "" {
-		baseDir = filepath.Dir(c.sourcePath)
-	}
-	if baseDir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("could not resolve working directory: %w", err)
-		}
-		baseDir = cwd
+	baseDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("could not resolve working directory: %w", err)
 	}
 
 	roots := make([]string, 0, len(c.Files.Roots))

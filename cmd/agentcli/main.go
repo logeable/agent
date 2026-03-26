@@ -102,11 +102,6 @@ func buildLoop(profilePath, modelName, baseURL, apiKey string) (*agent.Loop, err
 }
 
 func defaultCLIProfile() (*profile.Config, error) {
-	workDir, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("could not resolve current working directory: %w", err)
-	}
-
 	return &profile.Config{
 		Name: "agentcli",
 		Provider: profile.ProviderConfig{
@@ -115,7 +110,6 @@ func defaultCLIProfile() (*profile.Config, error) {
 		Agent: profile.AgentConfig{
 			ID:            "agentcli",
 			SystemPrompt:  profile.DefaultSystemPrompt,
-			WorkDir:       workDir,
 			MaxIterations: agent.DefaultMaxIterations,
 		},
 		Tools: profile.ToolsConfig{

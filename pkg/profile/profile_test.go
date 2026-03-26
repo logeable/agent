@@ -20,7 +20,6 @@ model = "gpt-5"
 [agent]
 id = "coding-agent"
 system_prompt = "Be precise."
-workdir = "."
 max_iterations = 12
 
 [files]
@@ -89,9 +88,6 @@ func TestBuildLoopAllowsModelFromOverride(t *testing.T) {
 		Provider: ProviderConfig{
 			Kind:   "openai",
 			APIKey: "dummy-key",
-		},
-		Agent: AgentConfig{
-			WorkDir: t.TempDir(),
 		},
 	}
 
