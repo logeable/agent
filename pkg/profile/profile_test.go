@@ -28,7 +28,7 @@ max_iterations = 12
 scope = "workspace"
 
 [tools]
-enabled = ["read_file", "bash"]
+enabled = ["read_file", "bash", "web_fetch"]
 
 [tools.read_file]
 max_bytes = 2048
@@ -37,6 +37,10 @@ max_bytes = 2048
 timeout_ms = 1200
 max_output_bytes = 4096
 shell = "/bin/sh"
+
+[tools.web_fetch]
+timeout_ms = 1500
+max_bytes = 8192
 `), 0o644)
 	if err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -70,8 +74,8 @@ shell = "/bin/sh"
 	if loop.MaxIterations != 12 {
 		t.Fatalf("MaxIterations = %d, want 12", loop.MaxIterations)
 	}
-	if len(loop.Tools.Definitions()) != 2 {
-		t.Fatalf("tool definitions = %d, want 2", len(loop.Tools.Definitions()))
+	if len(loop.Tools.Definitions()) != 3 {
+		t.Fatalf("tool definitions = %d, want 3", len(loop.Tools.Definitions()))
 	}
 }
 

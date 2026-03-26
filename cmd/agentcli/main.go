@@ -114,13 +114,17 @@ func defaultCLIProfile() (*profile.Config, error) {
 			MaxIterations: agent.DefaultMaxIterations,
 		},
 		Tools: profile.ToolsConfig{
-			Enabled: []string{"read_file", "edit_file", "write_file", "bash"},
+			Enabled: []string{"read_file", "edit_file", "write_file", "bash", "web_fetch"},
 			ReadFile: profile.ReadFileToolConfig{
 				MaxBytes: 128 * 1024,
 			},
 			Bash: profile.BashToolConfig{
 				TimeoutMS:      30_000,
 				MaxOutputBytes: 64 * 1024,
+			},
+			WebFetch: profile.WebFetchToolConfig{
+				TimeoutMS: 20_000,
+				MaxBytes:  128 * 1024,
 			},
 		},
 	}, nil

@@ -22,9 +22,8 @@ import (
 // across many tasks. It is different from the deeper behavioral rules in Soul.
 func BuildDefaultIdentity() string {
 	return strings.TrimSpace(`
-You are a local coding agent operating in the current workspace.
-Your job is to understand the current state, make targeted changes when asked,
-and verify outcomes with tools when needed.
+You are a general-purpose local agent.
+You operate in the current environment and use available tools to help complete user requests.
 `)
 }
 
@@ -36,13 +35,11 @@ and verify outcomes with tools when needed.
 // easier to reason about and easier to override intentionally.
 func BuildDefaultSoul() string {
 	return strings.TrimSpace(`
-Understand the current state before making changes.
-Prefer reading files and inspecting command output over guessing.
-Use the smallest action that makes meaningful progress.
-Use read_file to inspect, edit_file for targeted edits, write_file for full-file creation or replacement, and bash for inspection, search, build, or test commands.
-Do not loop on tool calls without new information or a concrete recovery attempt.
-If a tool fails, report the failure clearly and adjust the plan instead of hiding it.
-Be concise, direct, and factual in user-facing output.
+Understand the current state before acting.
+Use tools to inspect facts instead of guessing.
+Take the smallest action that makes real progress.
+Do not repeat tool calls without new information.
+Report failures clearly and stay concise.
 `)
 }
 
@@ -161,6 +158,7 @@ type ToolsConfig struct {
 	WriteFile WriteFileToolConfig `toml:"write_file"`
 	EditFile  EditFileToolConfig  `toml:"edit_file"`
 	Bash      BashToolConfig      `toml:"bash"`
+	WebFetch  WebFetchToolConfig  `toml:"web_fetch"`
 }
 
 type ReadFileToolConfig struct {
@@ -175,6 +173,12 @@ type BashToolConfig struct {
 	TimeoutMS      int64  `toml:"timeout_ms"`
 	MaxOutputBytes int    `toml:"max_output_bytes"`
 	Shell          string `toml:"shell"`
+}
+
+type WebFetchToolConfig struct {
+	TimeoutMS int64  `toml:"timeout_ms"`
+	MaxBytes  int64  `toml:"max_bytes"`
+	UserAgent string `toml:"user_agent"`
 }
 
 // BuildOptions lets callers override selected profile values at runtime.
@@ -354,6 +358,12 @@ func (c *Config) buildRegistry(workDir string) (*tooling.Registry, error) {
 				MaxOutputBytes: positiveIntOrDefault(c.Tools.Bash.MaxOutputBytes, 64*1024),
 				Shell:          strings.TrimSpace(c.Tools.Bash.Shell),
 			})
+		case "web_fetch":
+			registry.Register(builtintools.WebFetchTool{
+				Timeout:   time.Duration(positiveInt64OrDefault(c.Tools.WebFetch.TimeoutMS, 20_000)) * time.Millisecond,
+				MaxBytes:  positiveInt64OrDefault(c.Tools.WebFetch.MaxBytes, 128*1024),
+				UserAgent: strings.TrimSpace(c.Tools.WebFetch.UserAgent),
+			})
 		default:
 			return nil, fmt.Errorf("unsupported tool %q", name)
 		}
@@ -394,7 +404,7 @@ func (c *Config) buildPathPolicy(workDir string) (builtintools.PathPolicy, error
 
 func (c *Config) enabledTools() []string {
 	if len(c.Tools.Enabled) == 0 {
-		return []string{"read_file", "edit_file", "write_file", "bash"}
+		return []string{"read_file", "edit_file", "write_file", "bash", "web_fetch"}
 	}
 
 	enabled := make([]string, 0, len(c.Tools.Enabled))
@@ -454,7 +464,7 @@ func (c *Config) resolvedFileRoots() ([]string, error) {
 
 func isSupportedTool(name string) bool {
 	switch name {
-	case "read_file", "edit_file", "write_file", "bash":
+	case "read_file", "edit_file", "write_file", "bash", "web_fetch":
 		return true
 	default:
 		return false
