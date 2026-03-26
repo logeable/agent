@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/logeable/agent/pkg/agentcore/provider"
 	"github.com/logeable/agent/pkg/agentcore/session"
 	"github.com/logeable/agent/pkg/agentcore/tooling"
+	builtintools "github.com/logeable/agent/pkg/tools"
 )
 
 type scriptedModel struct {
@@ -81,6 +84,30 @@ func (echoTool) Parameters() map[string]any {
 
 func (echoTool) Execute(_ context.Context, args map[string]any) *tooling.Result {
 	return &tooling.Result{ForModel: fmt.Sprintf("echo:%v", args["text"])}
+}
+
+type approvalTool struct{}
+
+func (approvalTool) Name() string { return "dangerous" }
+
+func (approvalTool) Description() string { return "Needs approval before execution" }
+
+func (approvalTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+	}
+}
+
+func (approvalTool) Execute(ctx context.Context, _ map[string]any) *tooling.Result {
+	if tooling.ToolApproved(ctx, "dangerous") {
+		return &tooling.Result{ForModel: "dangerous:ok"}
+	}
+	return tooling.RequiresApproval(tooling.ApprovalRequest{
+		ID:          "approval-1",
+		Tool:        "dangerous",
+		Reason:      "this action needs explicit approval",
+		ActionLabel: "run dangerous action",
+	})
 }
 
 func TestLoopDirectAnswer(t *testing.T) {
@@ -246,5 +273,230 @@ drain:
 
 	if !sawTurnStart || !sawModelRequest {
 		t.Fatalf("expected typed events, got turnStart=%v modelRequest=%v", sawTurnStart, sawModelRequest)
+	}
+}
+
+func TestLoopStopsWhenToolRequiresApproval(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*provider.Response{
+			{
+				Content: "I need approval.",
+				ToolCalls: []provider.ToolCall{
+					{ID: "call-1", Name: "dangerous", Arguments: map[string]any{}},
+				},
+			},
+		},
+	}
+	registry := tooling.NewRegistry()
+	registry.Register(approvalTool{})
+
+	store := session.NewMemoryStore()
+	bus := NewEventBus()
+	defer bus.Close()
+	sub := bus.Subscribe(32)
+	defer bus.Unsubscribe(sub.ID)
+
+	loop := Loop{
+		Model:         model,
+		Tools:         registry,
+		Sessions:      store,
+		Context:       ContextBuilder{SystemPrompt: "You are an agent."},
+		MaxIterations: 4,
+		Events:        bus,
+	}
+
+	_, err := loop.Process(context.Background(), "s1", "run it")
+	if err == nil {
+		t.Fatal("Process() error = nil, want approval error")
+	}
+	approvalErr, ok := err.(*ApprovalRequiredError)
+	if !ok {
+		t.Fatalf("error = %T, want *ApprovalRequiredError", err)
+	}
+	if approvalErr.Request.ID != "approval-1" {
+		t.Fatalf("approval request id = %q, want approval-1", approvalErr.Request.ID)
+	}
+
+	var sawApproval bool
+	var sawTurnFinished bool
+drain:
+	for {
+		select {
+		case evt := <-sub.C:
+			switch evt.Kind {
+			case EventApprovalRequested:
+				payload, ok := evt.Payload.(ApprovalRequestedPayload)
+				if !ok {
+					t.Fatalf("payload type = %T, want ApprovalRequestedPayload", evt.Payload)
+				}
+				if payload.RequestID != "approval-1" {
+					t.Fatalf("request id = %q, want approval-1", payload.RequestID)
+				}
+				sawApproval = true
+			case EventTurnFinished:
+				payload, ok := evt.Payload.(TurnFinishedPayload)
+				if !ok {
+					t.Fatalf("payload type = %T, want TurnFinishedPayload", evt.Payload)
+				}
+				if payload.Status != TurnStatusApprovalRequired {
+					t.Fatalf("turn status = %q, want %q", payload.Status, TurnStatusApprovalRequired)
+				}
+				sawTurnFinished = true
+			}
+		default:
+			break drain
+		}
+	}
+
+	if !sawApproval || !sawTurnFinished {
+		t.Fatalf("expected approval flow events, got approval=%v turnFinished=%v", sawApproval, sawTurnFinished)
+	}
+}
+
+func TestLoopContinuesAfterApproval(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*provider.Response{
+			{
+				Content: "I need approval.",
+				ToolCalls: []provider.ToolCall{
+					{ID: "call-1", Name: "dangerous", Arguments: map[string]any{}},
+				},
+			},
+			{Content: "done"},
+		},
+	}
+	registry := tooling.NewRegistry()
+	registry.Register(approvalTool{})
+
+	store := session.NewMemoryStore()
+	bus := NewEventBus()
+	defer bus.Close()
+	sub := bus.Subscribe(32)
+	defer bus.Unsubscribe(sub.ID)
+
+	loop := Loop{
+		Model:         model,
+		Tools:         registry,
+		Sessions:      store,
+		Context:       ContextBuilder{SystemPrompt: "You are an agent."},
+		MaxIterations: 4,
+		Events:        bus,
+		Approval: func(_ context.Context, req tooling.ApprovalRequest) (bool, error) {
+			return req.Tool == "dangerous", nil
+		},
+	}
+
+	got, err := loop.Process(context.Background(), "s1", "run it")
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if got != "done" {
+		t.Fatalf("Process() = %q, want done", got)
+	}
+
+	var sawResolved bool
+drain:
+	for {
+		select {
+		case evt := <-sub.C:
+			if evt.Kind != EventApprovalResolved {
+				continue
+			}
+			payload, ok := evt.Payload.(ApprovalResolvedPayload)
+			if !ok {
+				t.Fatalf("payload type = %T, want ApprovalResolvedPayload", evt.Payload)
+			}
+			if !payload.Approved {
+				t.Fatalf("approved = false, want true")
+			}
+			sawResolved = true
+		default:
+			break drain
+		}
+	}
+	if !sawResolved {
+		t.Fatal("expected approval_resolved event")
+	}
+}
+
+func TestLoopReturnsApprovalDeniedError(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*provider.Response{
+			{
+				Content: "I need approval.",
+				ToolCalls: []provider.ToolCall{
+					{ID: "call-1", Name: "dangerous", Arguments: map[string]any{}},
+				},
+			},
+		},
+	}
+	registry := tooling.NewRegistry()
+	registry.Register(approvalTool{})
+
+	store := session.NewMemoryStore()
+	loop := Loop{
+		Model:         model,
+		Tools:         registry,
+		Sessions:      store,
+		Context:       ContextBuilder{SystemPrompt: "You are an agent."},
+		MaxIterations: 4,
+		Approval: func(_ context.Context, _ tooling.ApprovalRequest) (bool, error) {
+			return false, nil
+		},
+	}
+
+	_, err := loop.Process(context.Background(), "s1", "run it")
+	if err == nil {
+		t.Fatal("Process() error = nil, want approval denied error")
+	}
+	if _, ok := err.(*ApprovalDeniedError); !ok {
+		t.Fatalf("error = %T, want *ApprovalDeniedError", err)
+	}
+}
+
+func TestLoopCanContinueAfterReadFileEscapeApproval(t *testing.T) {
+	root := t.TempDir()
+	outsideRoot := t.TempDir()
+	targetPath := filepath.Join(outsideRoot, "note.txt")
+	if err := os.WriteFile(targetPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	model := &scriptedModel{
+		responses: []*provider.Response{
+			{
+				Content: "I need to read a file.",
+				ToolCalls: []provider.ToolCall{
+					{ID: "call-1", Name: "read_file", Arguments: map[string]any{"path": targetPath}},
+				},
+			},
+			{Content: "done"},
+		},
+	}
+	registry := tooling.NewRegistry()
+	registry.Register(builtintools.ReadFileTool{
+		PathPolicy: builtintools.PathPolicy{
+			Scope: builtintools.PathScopeWorkspace,
+			Roots: []string{root},
+		},
+	})
+
+	loop := Loop{
+		Model:         model,
+		Tools:         registry,
+		Sessions:      session.NewMemoryStore(),
+		Context:       ContextBuilder{SystemPrompt: "You are an agent."},
+		MaxIterations: 4,
+		Approval: func(_ context.Context, req tooling.ApprovalRequest) (bool, error) {
+			return req.Tool == "read_file", nil
+		},
+	}
+
+	got, err := loop.Process(context.Background(), "s1", "run it")
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if got != "done" {
+		t.Fatalf("Process() = %q, want done", got)
 	}
 }

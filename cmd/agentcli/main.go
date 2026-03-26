@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/logeable/agent/pkg/agentcore/agent"
+	"github.com/logeable/agent/pkg/agentcore/tooling"
 	"github.com/logeable/agent/pkg/profile"
 )
 
@@ -53,6 +54,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	loop.Approval = promptForApproval
 	loop.Events = agent.NewEventBus()
 	defer loop.Events.Close()
 	stopEvents := startEventPrinter(loop.Events, showEvents)
@@ -140,6 +142,14 @@ func runSingleMessage(loop *agent.Loop, sessionKey, message string, stream bool)
 	resp, err := loop.Process(context.Background(), sessionKey, message)
 	if err != nil {
 		stopStreaming()
+		if deniedErr, ok := err.(*agent.ApprovalDeniedError); ok {
+			fmt.Fprintf(os.Stderr, "approval denied: %s\n", formatDeniedError(deniedErr))
+			os.Exit(2)
+		}
+		if approvalErr, ok := err.(*agent.ApprovalRequiredError); ok {
+			fmt.Fprintf(os.Stderr, "approval required: %s\n", formatApprovalError(approvalErr))
+			os.Exit(2)
+		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -174,6 +184,14 @@ func runInteractive(loop *agent.Loop, sessionKey string, stream bool) {
 		resp, err := loop.Process(context.Background(), sessionKey, line)
 		if err != nil {
 			stopStreaming()
+			if deniedErr, ok := err.(*agent.ApprovalDeniedError); ok {
+				fmt.Fprintf(os.Stderr, "approval denied: %s\n", formatDeniedError(deniedErr))
+				continue
+			}
+			if approvalErr, ok := err.(*agent.ApprovalRequiredError); ok {
+				fmt.Fprintf(os.Stderr, "approval required: %s\n", formatApprovalError(approvalErr))
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			continue
 		}
@@ -288,6 +306,26 @@ func formatEventLine(evt agent.Event) string {
 		}
 		return fmt.Sprintf("%s iteration=%d tool=%s %s",
 			prefix, evt.Meta.Iteration, payload.Tool, formatToolFinishedSummary(payload))
+	case agent.EventApprovalRequested:
+		payload, ok := evt.Payload.(agent.ApprovalRequestedPayload)
+		if !ok {
+			return prefix
+		}
+		line := fmt.Sprintf("%s iteration=%d tool=%s", prefix, evt.Meta.Iteration, payload.Tool)
+		if payload.ActionLabel != "" {
+			line += fmt.Sprintf(" action=%q", truncateForLog(payload.ActionLabel, 80))
+		}
+		if payload.Reason != "" {
+			line += fmt.Sprintf(" reason=%q", truncateForLog(payload.Reason, 120))
+		}
+		return line
+	case agent.EventApprovalResolved:
+		payload, ok := evt.Payload.(agent.ApprovalResolvedPayload)
+		if !ok {
+			return prefix
+		}
+		return fmt.Sprintf("%s iteration=%d tool=%s approved=%t",
+			prefix, evt.Meta.Iteration, payload.Tool, payload.Approved)
 	case agent.EventError:
 		payload, ok := evt.Payload.(agent.ErrorPayload)
 		if !ok {
@@ -336,6 +374,72 @@ func formatToolFinishedSummary(payload agent.ToolFinishedPayload) string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+func formatApprovalError(err *agent.ApprovalRequiredError) string {
+	if err == nil {
+		return "approval required"
+	}
+
+	parts := make([]string, 0, 3)
+	if err.Request.Tool != "" {
+		parts = append(parts, fmt.Sprintf("tool=%s", err.Request.Tool))
+	}
+	if err.Request.ActionLabel != "" {
+		parts = append(parts, fmt.Sprintf("action=%q", truncateForLog(err.Request.ActionLabel, 80)))
+	}
+	if err.Request.Reason != "" {
+		parts = append(parts, fmt.Sprintf("reason=%q", truncateForLog(err.Request.Reason, 120)))
+	}
+	if len(parts) == 0 {
+		return "approval required"
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatDeniedError(err *agent.ApprovalDeniedError) string {
+	if err == nil {
+		return "approval denied"
+	}
+	if err.Request.ActionLabel != "" {
+		return truncateForLog(err.Request.ActionLabel, 80)
+	}
+	if err.Request.Reason != "" {
+		return truncateForLog(err.Request.Reason, 120)
+	}
+	return "approval denied"
+}
+
+func promptForApproval(_ context.Context, req tooling.ApprovalRequest) (bool, error) {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Approval required")
+	if req.Tool != "" {
+		fmt.Fprintf(os.Stderr, "Tool: %s\n", req.Tool)
+	}
+	if req.ActionLabel != "" {
+		fmt.Fprintf(os.Stderr, "Action: %s\n", req.ActionLabel)
+	}
+	if req.Reason != "" {
+		fmt.Fprintf(os.Stderr, "Reason: %s\n", req.Reason)
+	}
+	if len(req.Details) > 0 {
+		if command, ok := req.Details["command"].(string); ok && command != "" {
+			fmt.Fprintf(os.Stderr, "Command: %s\n", command)
+		}
+		if workdir, ok := req.Details["workdir"].(string); ok && workdir != "" {
+			fmt.Fprintf(os.Stderr, "Workdir: %s\n", workdir)
+		}
+	}
+	fmt.Fprint(os.Stderr, "Approve? [y/N]: ")
+
+	line, err := reader.ReadString('\n')
+	if err != nil && len(line) == 0 {
+		return false, err
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes", nil
 }
 
 func formatArgs(args map[string]any) string {

@@ -48,6 +48,15 @@ type BashTool struct {
 
 	// MaxOutputBytes limits how much combined output is returned.
 	MaxOutputBytes int
+
+	// RequireApproval forces every bash invocation to stop and request approval
+	// before command execution begins.
+	//
+	// Why:
+	// Shell execution is the highest-risk built-in capability in this codebase.
+	// A simple instance-level gate gives hosts a clear first approval policy
+	// without introducing a full policy engine.
+	RequireApproval bool
 }
 
 func (t BashTool) Name() string { return "bash" }
@@ -89,18 +98,29 @@ func (t BashTool) Execute(ctx context.Context, args map[string]any) *tooling.Res
 		return tooling.Error(fmt.Sprintf("bash could not resolve workdir %q: %v", workDir, err))
 	}
 
-	timeout := t.Timeout
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
-
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	shell := t.Shell
 	if strings.TrimSpace(shell) == "" {
 		shell = "/bin/sh"
 	}
+
+	if t.RequireApproval && !tooling.ToolApproved(ctx, t.Name()) {
+		return tooling.RequiresApproval(tooling.ApprovalRequest{
+			Tool:        t.Name(),
+			Reason:      "bash execution requires approval by policy",
+			ActionLabel: "run shell command",
+			Details: map[string]any{
+				"command":    command,
+				"workdir":    absWorkDir,
+				"shell":      shell,
+				"timeout_ms": resolvedTimeout(t.Timeout).Milliseconds(),
+			},
+		})
+	}
+
+	timeout := resolvedTimeout(t.Timeout)
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, shell, "-lc", command)
 	cmd.Dir = absWorkDir
@@ -164,6 +184,13 @@ func (t BashTool) Execute(ctx context.Context, args map[string]any) *tooling.Res
 		ForUser:  userText,
 		Metadata: metadata,
 	}
+}
+
+func resolvedTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return 60 * time.Second
+	}
+	return timeout
 }
 
 // limitedOutputBuffer stores at most limit bytes while still recording that

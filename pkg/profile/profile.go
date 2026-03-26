@@ -185,9 +185,10 @@ type WriteFileToolConfig struct{}
 type EditFileToolConfig struct{}
 
 type BashToolConfig struct {
-	TimeoutMS      int64  `toml:"timeout_ms"`
-	MaxOutputBytes int    `toml:"max_output_bytes"`
-	Shell          string `toml:"shell"`
+	TimeoutMS       int64  `toml:"timeout_ms"`
+	MaxOutputBytes  int    `toml:"max_output_bytes"`
+	Shell           string `toml:"shell"`
+	RequireApproval bool   `toml:"require_approval"`
 }
 
 type WebFetchToolConfig struct {
@@ -263,7 +264,6 @@ func (c *Config) Validate() error {
 	if c.Agent.MaxIterations < 0 {
 		return fmt.Errorf("agent.max_iterations must be zero or greater")
 	}
-
 	return nil
 }
 
@@ -390,10 +390,11 @@ func (c *Config) buildRegistry(workDir string, pathPolicy builtintools.PathPolic
 			})
 		case "bash":
 			registry.Register(builtintools.BashTool{
-				WorkDir:        workDir,
-				Timeout:        time.Duration(positiveInt64OrDefault(c.Tools.Bash.TimeoutMS, 60_000)) * time.Millisecond,
-				MaxOutputBytes: positiveIntOrDefault(c.Tools.Bash.MaxOutputBytes, 64*1024),
-				Shell:          strings.TrimSpace(c.Tools.Bash.Shell),
+				WorkDir:         workDir,
+				Timeout:         time.Duration(positiveInt64OrDefault(c.Tools.Bash.TimeoutMS, 60_000)) * time.Millisecond,
+				MaxOutputBytes:  positiveIntOrDefault(c.Tools.Bash.MaxOutputBytes, 64*1024),
+				Shell:           strings.TrimSpace(c.Tools.Bash.Shell),
+				RequireApproval: c.Tools.Bash.RequireApproval,
 			})
 		case "web_fetch":
 			registry.Register(builtintools.WebFetchTool{

@@ -321,3 +321,73 @@ func TestBuildLoopAllowsReadingSkillFiles(t *testing.T) {
 		t.Fatalf("ForModel = %q, want skill file content", result.ForModel)
 	}
 }
+
+func TestBuildLoopPassesBashApprovalPolicy(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{
+			Kind:   "openai",
+			APIKey: "dummy-key",
+			Model:  "gpt-5",
+		},
+		Tools: ToolsConfig{
+			Enabled: []string{"bash"},
+			Bash: BashToolConfig{
+				RequireApproval: true,
+			},
+		},
+	}
+
+	loop, err := cfg.BuildLoop(BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildLoop() error = %v", err)
+	}
+
+	result := loop.Tools.Execute(context.Background(), "bash", map[string]any{
+		"command": "pwd",
+	})
+	if result == nil || result.Approval == nil {
+		t.Fatalf("bash result = %#v, want approval request", result)
+	}
+	if result.Approval.Tool != "bash" {
+		t.Fatalf("approval tool = %q, want bash", result.Approval.Tool)
+	}
+}
+
+func TestBuildLoopPassesFileApprovalPolicy(t *testing.T) {
+	root := t.TempDir()
+	outsideRoot := t.TempDir()
+	filePath := filepath.Join(outsideRoot, "note.txt")
+	if err := os.WriteFile(filePath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg := &Config{
+		Provider: ProviderConfig{
+			Kind:   "openai",
+			APIKey: "dummy-key",
+			Model:  "gpt-5",
+		},
+		Files: FilesConfig{
+			Scope: "explicit",
+			Roots: []string{root},
+		},
+		Tools: ToolsConfig{
+			Enabled: []string{"read_file", "edit_file", "write_file"},
+		},
+	}
+
+	loop, err := cfg.BuildLoop(BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildLoop() error = %v", err)
+	}
+
+	if result := loop.Tools.Execute(context.Background(), "read_file", map[string]any{"path": filePath}); result == nil || result.Approval == nil {
+		t.Fatalf("read_file result = %#v, want approval", result)
+	}
+	if result := loop.Tools.Execute(context.Background(), "edit_file", map[string]any{"path": filePath, "old_string": "hello", "new_string": "world"}); result == nil || result.Approval == nil {
+		t.Fatalf("edit_file result = %#v, want approval", result)
+	}
+	if result := loop.Tools.Execute(context.Background(), "write_file", map[string]any{"path": filepath.Join(outsideRoot, "new.txt"), "content": "hello"}); result == nil || result.Approval == nil {
+		t.Fatalf("write_file result = %#v, want approval", result)
+	}
+}

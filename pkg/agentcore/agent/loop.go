@@ -18,6 +18,55 @@ import (
 // A hard limit makes failure mode obvious and prevents runaway execution.
 const DefaultMaxIterations = 8
 
+// ApprovalRequiredError reports that a turn stopped because a tool requested
+// explicit approval before continuing.
+//
+// Why:
+// This is not the same as a normal tool failure. The action may be valid, but
+// the runtime intentionally pauses instead of executing it immediately.
+type ApprovalRequiredError struct {
+	Request tooling.ApprovalRequest
+}
+
+func (e *ApprovalRequiredError) Error() string {
+	if e == nil {
+		return "approval required"
+	}
+	if e.Request.Reason != "" {
+		return e.Request.Reason
+	}
+	if e.Request.Tool != "" {
+		return fmt.Sprintf("approval required for tool %q", e.Request.Tool)
+	}
+	return "approval required"
+}
+
+// ApprovalDeniedError reports that an approval-aware loop requested approval,
+// received an explicit denial, and therefore could not continue execution.
+type ApprovalDeniedError struct {
+	Request tooling.ApprovalRequest
+}
+
+func (e *ApprovalDeniedError) Error() string {
+	if e == nil {
+		return "approval denied"
+	}
+	if e.Request.Reason != "" {
+		return fmt.Sprintf("approval denied: %s", e.Request.Reason)
+	}
+	if e.Request.Tool != "" {
+		return fmt.Sprintf("approval denied for tool %q", e.Request.Tool)
+	}
+	return "approval denied"
+}
+
+// ApprovalHandler lets the host decide whether a requested action may proceed.
+//
+// Why:
+// Approval is an execution concern, but the actual decision belongs to the
+// outer host (CLI, UI, API server), not to the loop or the tool itself.
+type ApprovalHandler func(ctx context.Context, req tooling.ApprovalRequest) (approved bool, err error)
+
 // Loop is the extracted "agent runtime" in its smallest useful form.
 //
 // What:
@@ -39,6 +88,7 @@ type Loop struct {
 	MaxIterations int
 	Options       map[string]any
 	Events        *EventBus
+	Approval      ApprovalHandler
 	nextTurnID    atomic.Uint64
 }
 
@@ -171,6 +221,46 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 				Arguments: call.Arguments,
 			})
 			result := l.Tools.Execute(ctx, call.Name, call.Arguments)
+			if result != nil && result.Approval != nil {
+				req := *result.Approval
+				if req.Tool == "" {
+					req.Tool = call.Name
+				}
+				l.emit(toolMeta, EventApprovalRequested, ApprovalRequestedPayload{
+					Tool:        req.Tool,
+					RequestID:   req.ID,
+					Reason:      req.Reason,
+					ActionLabel: req.ActionLabel,
+					Details:     req.Details,
+				})
+
+				if l.Approval == nil {
+					finalStatus = TurnStatusApprovalRequired
+					return "", &ApprovalRequiredError{Request: req}
+				}
+
+				approved, approvalErr := l.Approval(ctx, req)
+				if approvalErr != nil {
+					finalStatus = TurnStatusError
+					l.emit(toolMeta, EventError, ErrorPayload{
+						Stage:   "approval",
+						Message: approvalErr.Error(),
+					})
+					return "", approvalErr
+				}
+				l.emit(toolMeta, EventApprovalResolved, ApprovalResolvedPayload{
+					Tool:      req.Tool,
+					RequestID: req.ID,
+					Approved:  approved,
+					Reason:    req.Reason,
+				})
+				if !approved {
+					finalStatus = TurnStatusApprovalRequired
+					return "", &ApprovalDeniedError{Request: req}
+				}
+
+				result = l.Tools.Execute(tooling.ContextWithApprovedTool(ctx, req.Tool), call.Name, call.Arguments)
+			}
 			toolMsg := provider.Message{
 				Role:       "tool",
 				Content:    result.ContentForModel(),

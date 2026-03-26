@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/logeable/agent/pkg/agentcore/provider"
@@ -42,6 +43,54 @@ type Result struct {
 	IsError  bool
 	Err      error
 	Metadata map[string]any
+	Approval *ApprovalRequest
+}
+
+// ApprovalRequest describes an action that the runtime refuses to execute
+// immediately without an explicit higher-level approval step.
+//
+// Why:
+// Tools sometimes need a third outcome besides success or failure:
+// "this action is possible, but it requires approval first".
+type ApprovalRequest struct {
+	ID          string
+	Tool        string
+	Reason      string
+	ActionLabel string
+	Details     map[string]any
+}
+
+type approvedToolContextKey struct{}
+
+// ContextWithApprovedTool marks one tool as approved for the remainder of a
+// specific execution path.
+//
+// Why:
+// A tool may first return `RequiresApproval(...)`, and after approval the loop
+// needs a clean way to retry the same tool without tripping the approval gate
+// again. Context keeps that override scoped to the current execution.
+func ContextWithApprovedTool(ctx context.Context, toolName string) context.Context {
+	if strings.TrimSpace(toolName) == "" {
+		return ctx
+	}
+
+	approved, _ := ctx.Value(approvedToolContextKey{}).(map[string]bool)
+	next := make(map[string]bool, len(approved)+1)
+	for key, value := range approved {
+		next[key] = value
+	}
+	next[toolName] = true
+	return context.WithValue(ctx, approvedToolContextKey{}, next)
+}
+
+// ToolApproved reports whether the current execution context already carries an
+// approval grant for the given tool.
+func ToolApproved(ctx context.Context, toolName string) bool {
+	if strings.TrimSpace(toolName) == "" {
+		return false
+	}
+	approved, _ := ctx.Value(approvedToolContextKey{}).(map[string]bool)
+	return approved[toolName]
 }
 
 // ContentForModel returns the safest fallback payload to place into a tool message.
@@ -74,6 +123,18 @@ func Error(msg string) *Result {
 		ForUser:  msg,
 		IsError:  true,
 		Err:      errors.New(msg),
+	}
+}
+
+// RequiresApproval creates a conventional approval-needed result.
+//
+// Why:
+// Approval is a first-class runtime outcome, so tools should be able to return
+// it without re-encoding the same boilerplate on every call site.
+func RequiresApproval(req ApprovalRequest) *Result {
+	return &Result{
+		ForUser:  req.Reason,
+		Approval: &req,
 	}
 }
 

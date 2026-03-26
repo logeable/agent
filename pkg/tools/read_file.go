@@ -53,15 +53,28 @@ func (t ReadFileTool) Parameters() map[string]any {
 	}
 }
 
-func (t ReadFileTool) Execute(_ context.Context, args map[string]any) *tooling.Result {
+func (t ReadFileTool) Execute(ctx context.Context, args map[string]any) *tooling.Result {
 	relativePath, _ := args["path"].(string)
 	if strings.TrimSpace(relativePath) == "" {
 		return tooling.Error("read_file requires a non-empty path")
 	}
 
-	resolvedPath, err := t.PathPolicy.ResolvePath(relativePath)
+	resolvedPath, escaped, err := t.PathPolicy.ResolvePathWithEscape(relativePath)
 	if err != nil {
 		return tooling.Error(err.Error())
+	}
+	if escaped {
+		if !tooling.ToolApproved(ctx, t.Name()) {
+			return tooling.RequiresApproval(tooling.ApprovalRequest{
+				Tool:        t.Name(),
+				Reason:      "file read escapes the configured roots and requires approval",
+				ActionLabel: "read file outside configured roots",
+				Details: map[string]any{
+					"path":          relativePath,
+					"resolved_path": resolvedPath,
+				},
+			})
+		}
 	}
 
 	data, err := os.ReadFile(resolvedPath)

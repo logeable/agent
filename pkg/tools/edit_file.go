@@ -65,7 +65,7 @@ func (t EditFileTool) Parameters() map[string]any {
 	}
 }
 
-func (t EditFileTool) Execute(_ context.Context, args map[string]any) *tooling.Result {
+func (t EditFileTool) Execute(ctx context.Context, args map[string]any) *tooling.Result {
 	relativePath, _ := args["path"].(string)
 	oldString, _ := args["old_string"].(string)
 	newString, _ := args["new_string"].(string)
@@ -78,9 +78,22 @@ func (t EditFileTool) Execute(_ context.Context, args map[string]any) *tooling.R
 		return tooling.Error("edit_file requires old_string to be non-empty")
 	}
 
-	resolvedPath, err := t.PathPolicy.ResolvePath(relativePath)
+	resolvedPath, escaped, err := t.PathPolicy.ResolvePathWithEscape(relativePath)
 	if err != nil {
 		return tooling.Error(err.Error())
+	}
+	if escaped {
+		if !tooling.ToolApproved(ctx, t.Name()) {
+			return tooling.RequiresApproval(tooling.ApprovalRequest{
+				Tool:        t.Name(),
+				Reason:      "file edit escapes the configured roots and requires approval",
+				ActionLabel: "edit file outside configured roots",
+				Details: map[string]any{
+					"path":          relativePath,
+					"resolved_path": resolvedPath,
+				},
+			})
+		}
 	}
 
 	info, err := os.Stat(resolvedPath)

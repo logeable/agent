@@ -12,14 +12,16 @@ const EventSchemaVersion = 1
 type EventKind string
 
 const (
-	EventTurnStarted   EventKind = "turn_started"
-	EventTurnFinished  EventKind = "turn_finished"
-	EventModelRequest  EventKind = "model_request"
-	EventModelDelta    EventKind = "model_delta"
-	EventModelResponse EventKind = "model_response"
-	EventToolStarted   EventKind = "tool_started"
-	EventToolFinished  EventKind = "tool_finished"
-	EventError         EventKind = "error"
+	EventTurnStarted       EventKind = "turn_started"
+	EventTurnFinished      EventKind = "turn_finished"
+	EventModelRequest      EventKind = "model_request"
+	EventModelDelta        EventKind = "model_delta"
+	EventModelResponse     EventKind = "model_response"
+	EventToolStarted       EventKind = "tool_started"
+	EventToolFinished      EventKind = "tool_finished"
+	EventApprovalRequested EventKind = "approval_requested"
+	EventApprovalResolved  EventKind = "approval_resolved"
+	EventError             EventKind = "error"
 )
 
 // EventMeta carries stable correlation fields shared by every runtime event.
@@ -71,8 +73,9 @@ type Event struct {
 type TurnStatus string
 
 const (
-	TurnStatusCompleted TurnStatus = "completed"
-	TurnStatusError     TurnStatus = "error"
+	TurnStatusCompleted        TurnStatus = "completed"
+	TurnStatusError            TurnStatus = "error"
+	TurnStatusApprovalRequired TurnStatus = "approval_required"
 )
 
 // TurnStartedPayload describes the start of a user turn.
@@ -120,6 +123,25 @@ type ToolFinishedPayload struct {
 	UserPreview string
 	ErrorText   string
 	Metadata    map[string]any
+}
+
+// ApprovalRequestedPayload describes a tool action that requires approval
+// before execution can continue.
+type ApprovalRequestedPayload struct {
+	Tool        string
+	RequestID   string
+	Reason      string
+	ActionLabel string
+	Details     map[string]any
+}
+
+// ApprovalResolvedPayload describes the user's or host's decision for a prior
+// approval request.
+type ApprovalResolvedPayload struct {
+	Tool      string
+	RequestID string
+	Approved  bool
+	Reason    string
 }
 
 // ErrorPayload describes an execution error at some stage of the loop.

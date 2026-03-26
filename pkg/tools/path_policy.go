@@ -38,74 +38,65 @@ type PathPolicy struct {
 	Roots []string
 }
 
-// ResolvePath returns the absolute path if the policy allows it.
-func (p PathPolicy) ResolvePath(rawPath string) (string, error) {
+// ResolvePathWithEscape reports the resolved absolute path and whether the path
+// escapes the configured roots.
+//
+// Why:
+// File tools sometimes need a third outcome besides "allowed" or "denied":
+// "this path is outside the normal boundary, so approval may be required".
+func (p PathPolicy) ResolvePathWithEscape(rawPath string) (string, bool, error) {
 	if strings.TrimSpace(rawPath) == "" {
-		return "", fmt.Errorf("path is empty")
+		return "", false, fmt.Errorf("path is empty")
 	}
 
 	switch p.Scope {
 	case "", PathScopeWorkspace:
 		root, err := p.singleRoot("workspace")
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
-		return resolveWithinRoot(root, rawPath)
+		return resolveAgainstRoot(root, rawPath)
 	case PathScopeAny:
-		return resolveAnyPath(rawPath)
+		resolved, err := resolveAnyPath(rawPath)
+		return resolved, false, err
 	case PathScopeExplicit:
-		return p.resolveWithinRoots(rawPath)
+		return p.resolveWithinRootsWithEscape(rawPath)
 	default:
-		return "", fmt.Errorf("unsupported path scope %q", p.Scope)
+		return "", false, fmt.Errorf("unsupported path scope %q", p.Scope)
 	}
 }
 
-func (p PathPolicy) resolveWithinRoots(rawPath string) (string, error) {
-	if len(p.Roots) == 0 {
-		return "", fmt.Errorf("explicit path scope requires at least one root")
-	}
-
-	var lastErr error
-	for _, root := range p.Roots {
-		resolved, err := resolveWithinRoot(root, rawPath)
-		if err == nil {
-			return resolved, nil
-		}
-		lastErr = err
-	}
-
-	if filepath.IsAbs(rawPath) {
-		if allowed := p.matchAbsoluteRoot(rawPath); allowed != "" {
-			return filepath.Abs(rawPath)
-		}
-	}
-
-	if lastErr != nil {
-		return "", fmt.Errorf("path %q is outside the configured roots: %w", rawPath, lastErr)
-	}
-	return "", fmt.Errorf("path %q is outside the configured roots", rawPath)
-}
-
-func (p PathPolicy) matchAbsoluteRoot(rawPath string) string {
-	absPath, err := filepath.Abs(rawPath)
+// ResolvePath returns the absolute path if the policy allows it.
+func (p PathPolicy) ResolvePath(rawPath string) (string, error) {
+	resolved, escaped, err := p.ResolvePathWithEscape(rawPath)
 	if err != nil {
-		return ""
+		return "", err
+	}
+	if escaped {
+		return "", fmt.Errorf("path %q is outside the configured roots", rawPath)
+	}
+	return resolved, nil
+}
+
+func (p PathPolicy) resolveWithinRootsWithEscape(rawPath string) (string, bool, error) {
+	if len(p.Roots) == 0 {
+		return "", false, fmt.Errorf("explicit path scope requires at least one root")
 	}
 
 	for _, root := range p.Roots {
-		absRoot, err := filepath.Abs(root)
-		if err != nil {
-			continue
-		}
-		rel, err := filepath.Rel(absRoot, absPath)
-		if err != nil {
-			continue
-		}
-		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
-			return absRoot
+		resolved, escaped, err := resolveAgainstRoot(root, rawPath)
+		if err == nil {
+			if !escaped {
+				return resolved, false, nil
+			}
 		}
 	}
-	return ""
+
+	candidate, _, err := resolveAgainstRoot(p.Roots[0], rawPath)
+	if err != nil {
+		return "", false, err
+	}
+	return candidate, true, nil
 }
 
 func (p PathPolicy) singleRoot(label string) (string, error) {
@@ -123,10 +114,10 @@ func resolveAnyPath(rawPath string) (string, error) {
 	return filepath.Abs(filepath.Clean(rawPath))
 }
 
-func resolveWithinRoot(rootDir, rawPath string) (string, error) {
+func resolveAgainstRoot(rootDir, rawPath string) (string, bool, error) {
 	absRoot, err := filepath.Abs(rootDir)
 	if err != nil {
-		return "", fmt.Errorf("could not resolve root %q: %w", rootDir, err)
+		return "", false, fmt.Errorf("could not resolve root %q: %w", rootDir, err)
 	}
 
 	var absPath string
@@ -136,15 +127,15 @@ func resolveWithinRoot(rootDir, rawPath string) (string, error) {
 		absPath, err = filepath.Abs(filepath.Join(absRoot, filepath.Clean(rawPath)))
 	}
 	if err != nil {
-		return "", fmt.Errorf("could not resolve path %q: %w", rawPath, err)
+		return "", false, fmt.Errorf("could not resolve path %q: %w", rawPath, err)
 	}
 
 	rel, err := filepath.Rel(absRoot, absPath)
 	if err != nil {
-		return "", fmt.Errorf("could not validate path %q: %w", rawPath, err)
+		return "", false, fmt.Errorf("could not validate path %q: %w", rawPath, err)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes root %q", rawPath, absRoot)
+		return absPath, true, nil
 	}
-	return absPath, nil
+	return absPath, false, nil
 }

@@ -48,16 +48,29 @@ func (t WriteFileTool) Parameters() map[string]any {
 	}
 }
 
-func (t WriteFileTool) Execute(_ context.Context, args map[string]any) *tooling.Result {
+func (t WriteFileTool) Execute(ctx context.Context, args map[string]any) *tooling.Result {
 	relativePath, _ := args["path"].(string)
 	content, _ := args["content"].(string)
 	if strings.TrimSpace(relativePath) == "" {
 		return tooling.Error("write_file requires a non-empty path")
 	}
 
-	resolvedPath, err := t.PathPolicy.ResolvePath(relativePath)
+	resolvedPath, escaped, err := t.PathPolicy.ResolvePathWithEscape(relativePath)
 	if err != nil {
 		return tooling.Error(err.Error())
+	}
+	if escaped {
+		if !tooling.ToolApproved(ctx, t.Name()) {
+			return tooling.RequiresApproval(tooling.ApprovalRequest{
+				Tool:        t.Name(),
+				Reason:      "file write escapes the configured roots and requires approval",
+				ActionLabel: "write file outside configured roots",
+				Details: map[string]any{
+					"path":          relativePath,
+					"resolved_path": resolvedPath,
+				},
+			})
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(resolvedPath), 0o755); err != nil {
