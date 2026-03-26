@@ -8,48 +8,44 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
-	"github.com/logeable/agent/internal/demo"
 	"github.com/logeable/agent/pkg/agentcore/agent"
 	"github.com/logeable/agent/pkg/agentcore/provider"
 	"github.com/logeable/agent/pkg/agentcore/session"
-	"github.com/logeable/agent/pkg/agentcore/tools"
+	"github.com/logeable/agent/pkg/agentcore/tooling"
+	builtintools "github.com/logeable/agent/pkg/tools"
 )
 
 // This command is the smallest runnable terminal application for the extracted
-// agent runtime.
+// agent runtime using a real model provider.
 //
 // Why:
-// A beginner-friendly repository should let readers run something concrete as
-// early as possible. This CLI wires together:
+// This repository is focused on a stable execution core instead of demo-only
+// scaffolding. The CLI therefore wires together:
 // - the extracted Loop
 // - the in-memory session store
-// - two tiny demo tools
-// - a fake model that can request tools
-//
-// Later we can swap the fake model for a real provider without changing most
-// of the rest of the control flow.
+// - the built-in file and shell tools
+// - a real OpenAI-compatible model provider
 func main() {
 	var (
-		message      string
-		sessionKey   string
-		providerName string
-		modelName    string
-		baseURL      string
-		apiKey       string
-		stream       bool
+		message    string
+		sessionKey string
+		modelName  string
+		baseURL    string
+		apiKey     string
+		stream     bool
 	)
 
 	flag.StringVar(&message, "m", "", "Process a single message and exit")
-	flag.StringVar(&sessionKey, "session", "demo:default", "Session key used to preserve conversation state")
-	flag.StringVar(&providerName, "provider", "demo", "Provider to use: demo or openai")
-	flag.StringVar(&modelName, "model", "", "Model name for real providers")
+	flag.StringVar(&sessionKey, "session", "agentcli:default", "Session key used to preserve conversation state")
+	flag.StringVar(&modelName, "model", "", "Model name for the OpenAI-compatible provider")
 	flag.StringVar(&baseURL, "base-url", "", "Base URL for OpenAI-compatible providers")
 	flag.StringVar(&apiKey, "api-key", "", "API key for OpenAI-compatible providers")
 	flag.BoolVar(&stream, "stream", true, "Render model delta events when the provider supports streaming")
 	flag.Parse()
 
-	loop, err := buildLoop(providerName, modelName, baseURL, apiKey)
+	loop, err := buildLoop(modelName, baseURL, apiKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -65,12 +61,30 @@ func main() {
 	runInteractive(loop, sessionKey, stream)
 }
 
-func buildLoop(providerName, modelName, baseURL, apiKey string) (*agent.Loop, error) {
-	registry := tools.NewRegistry()
-	registry.Register(demo.EchoTool{})
-	registry.Register(demo.TimeTool{})
+func buildLoop(modelName, baseURL, apiKey string) (*agent.Loop, error) {
+	registry := tooling.NewRegistry()
 
-	chatModel, resolvedModelName, err := buildModel(providerName, modelName, baseURL, apiKey)
+	workDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("could not resolve current working directory: %w", err)
+	}
+	registry.Register(builtintools.ReadFileTool{
+		RootDir:  workDir,
+		MaxBytes: 128 * 1024,
+	})
+	registry.Register(builtintools.WriteFileTool{
+		RootDir: workDir,
+	})
+	registry.Register(builtintools.EditFileTool{
+		RootDir: workDir,
+	})
+	registry.Register(builtintools.BashTool{
+		WorkDir:        workDir,
+		Timeout:        30 * time.Second,
+		MaxOutputBytes: 64 * 1024,
+	})
+
+	chatModel, resolvedModelName, err := buildModel(modelName, baseURL, apiKey)
 	if err != nil {
 		return nil, err
 	}
@@ -86,34 +100,27 @@ func buildLoop(providerName, modelName, baseURL, apiKey string) (*agent.Loop, er
 	}, nil
 }
 
-func buildModel(providerName, modelName, baseURL, apiKey string) (provider.ChatModel, string, error) {
-	switch strings.ToLower(strings.TrimSpace(providerName)) {
-	case "", "demo":
-		return &demo.RuleBasedModel{}, "demo-rule-model", nil
-	case "openai":
-		resolvedBaseURL := firstNonEmpty(baseURL, os.Getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1")
-		resolvedAPIKey := firstNonEmpty(apiKey, os.Getenv("OPENAI_API_KEY"))
-		resolvedModel := firstNonEmpty(modelName, os.Getenv("OPENAI_MODEL"))
+func buildModel(modelName, baseURL, apiKey string) (provider.ChatModel, string, error) {
+	resolvedBaseURL := firstNonEmpty(baseURL, os.Getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1")
+	resolvedAPIKey := firstNonEmpty(apiKey, os.Getenv("OPENAI_API_KEY"))
+	resolvedModel := firstNonEmpty(modelName, os.Getenv("OPENAI_MODEL"))
 
-		if resolvedAPIKey == "" {
-			return nil, "", fmt.Errorf("OPENAI_API_KEY or -api-key is required when -provider=openai")
-		}
-		if resolvedModel == "" {
-			return nil, "", fmt.Errorf("OPENAI_MODEL or -model is required when -provider=openai")
-		}
-
-		model, err := provider.NewOpenAICompatModel(provider.OpenAICompatConfig{
-			BaseURL: resolvedBaseURL,
-			APIKey:  resolvedAPIKey,
-			Model:   resolvedModel,
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		return model, resolvedModel, nil
-	default:
-		return nil, "", fmt.Errorf("unknown provider %q", providerName)
+	if resolvedAPIKey == "" {
+		return nil, "", fmt.Errorf("OPENAI_API_KEY or -api-key is required")
 	}
+	if resolvedModel == "" {
+		return nil, "", fmt.Errorf("OPENAI_MODEL or -model is required")
+	}
+
+	model, err := provider.NewOpenAICompatModel(provider.OpenAICompatConfig{
+		BaseURL: resolvedBaseURL,
+		APIKey:  resolvedAPIKey,
+		Model:   resolvedModel,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return model, resolvedModel, nil
 }
 
 func runSingleMessage(loop *agent.Loop, sessionKey, message string, stream bool) {
@@ -132,9 +139,9 @@ func runSingleMessage(loop *agent.Loop, sessionKey, message string, stream bool)
 func runInteractive(loop *agent.Loop, sessionKey string, stream bool) {
 	scanner := bufio.NewScanner(os.Stdin)
 
-	fmt.Println("agentcli interactive demo")
+	fmt.Println("agentcli interactive mode")
 	fmt.Println("Type a message and press Enter. Type `exit` or `quit` to stop.")
-	fmt.Println("Examples: `what time is it?`, `echo hello world`")
+	fmt.Println("Examples: `read go.mod`, `show files under pkg`, `run go test ./...`")
 
 	for {
 		fmt.Print("> ")

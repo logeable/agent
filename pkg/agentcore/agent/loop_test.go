@@ -7,7 +7,7 @@ import (
 
 	"github.com/logeable/agent/pkg/agentcore/provider"
 	"github.com/logeable/agent/pkg/agentcore/session"
-	"github.com/logeable/agent/pkg/agentcore/tools"
+	"github.com/logeable/agent/pkg/agentcore/tooling"
 )
 
 type scriptedModel struct {
@@ -79,8 +79,8 @@ func (echoTool) Parameters() map[string]any {
 	}
 }
 
-func (echoTool) Execute(_ context.Context, args map[string]any) *tools.Result {
-	return &tools.Result{ForModel: fmt.Sprintf("echo:%v", args["text"])}
+func (echoTool) Execute(_ context.Context, args map[string]any) *tooling.Result {
+	return &tooling.Result{ForModel: fmt.Sprintf("echo:%v", args["text"])}
 }
 
 func TestLoopDirectAnswer(t *testing.T) {
@@ -115,7 +115,7 @@ func TestLoopToolRoundTrip(t *testing.T) {
 			{Content: "done"},
 		},
 	}
-	registry := tools.NewRegistry()
+	registry := tooling.NewRegistry()
 	registry.Register(echoTool{})
 
 	store := session.NewMemoryStore()

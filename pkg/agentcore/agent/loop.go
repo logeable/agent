@@ -8,7 +8,7 @@ import (
 
 	"github.com/logeable/agent/pkg/agentcore/provider"
 	"github.com/logeable/agent/pkg/agentcore/session"
-	"github.com/logeable/agent/pkg/agentcore/tools"
+	"github.com/logeable/agent/pkg/agentcore/tooling"
 )
 
 // DefaultMaxIterations is the safety cap for repeated model->tool->model loops.
@@ -33,7 +33,7 @@ type Loop struct {
 	Model         provider.ChatModel
 	AgentID       string
 	ModelName     string
-	Tools         *tools.Registry
+	Tools         *tooling.Registry
 	Sessions      session.Store
 	Context       ContextBuilder
 	MaxIterations int
@@ -61,7 +61,7 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 		return "", fmt.Errorf("session store is nil")
 	}
 	if l.Tools == nil {
-		l.Tools = tools.NewRegistry()
+		l.Tools = tooling.NewRegistry()
 	}
 
 	maxIterations := l.MaxIterations
