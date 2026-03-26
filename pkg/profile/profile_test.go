@@ -11,6 +11,19 @@ import (
 
 func TestLoadAndBuildLoop(t *testing.T) {
 	tempDir := t.TempDir()
+	skillDir := filepath.Join(tempDir, "skills", "summarize")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(`---
+name: summarize
+description: Summarize long material into concise notes.
+---
+# Summarize
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
 	profilePath := filepath.Join(tempDir, "coding.toml")
 	err := os.WriteFile(profilePath, []byte(`
 name = "coding"
@@ -28,6 +41,9 @@ max_iterations = 12
 
 [files]
 scope = "workspace"
+
+[skills]
+enabled = true
 
 [tools]
 enabled = ["read_file", "bash", "web_fetch"]
@@ -52,6 +68,7 @@ max_bytes = 8192
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
+	cfg.Skills.Roots = []string{filepath.Join(tempDir, "skills")}
 
 	loop, err := cfg.BuildLoop(BuildOptions{})
 	if err != nil {
@@ -73,6 +90,12 @@ max_bytes = 8192
 	if !strings.Contains(loop.Context.SystemPrompt, "# Environment") {
 		t.Fatalf("SystemPrompt missing environment section, got %q", loop.Context.SystemPrompt)
 	}
+	if !strings.Contains(loop.Context.SystemPrompt, "# Skills") {
+		t.Fatalf("SystemPrompt missing skills section, got %q", loop.Context.SystemPrompt)
+	}
+	if !strings.Contains(loop.Context.SystemPrompt, "summarize") {
+		t.Fatalf("SystemPrompt missing skill summary, got %q", loop.Context.SystemPrompt)
+	}
 	if loop.MaxIterations != 12 {
 		t.Fatalf("MaxIterations = %d, want 12", loop.MaxIterations)
 	}
@@ -86,7 +109,7 @@ func TestBuildSystemPromptUsesDefaults(t *testing.T) {
 		WorkDir:      "/tmp/project",
 		FilesScope:   "workspace",
 		EnabledTools: []string{"read_file", "bash"},
-	})
+	}, "")
 
 	if !strings.Contains(prompt, "# Identity") {
 		t.Fatalf("prompt missing identity section: %q", prompt)

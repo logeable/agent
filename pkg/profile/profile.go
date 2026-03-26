@@ -11,6 +11,7 @@ import (
 	"github.com/logeable/agent/pkg/agentcore/provider"
 	"github.com/logeable/agent/pkg/agentcore/session"
 	"github.com/logeable/agent/pkg/agentcore/tooling"
+	"github.com/logeable/agent/pkg/skills"
 	builtintools "github.com/logeable/agent/pkg/tools"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -64,7 +65,7 @@ type EnvironmentInfo struct {
 // Why:
 // This keeps prompt construction explicit and layered. Identity and Soul come
 // from the profile, while Environment comes from the actual instantiated agent.
-func BuildSystemPrompt(identity, soul string, env EnvironmentInfo) string {
+func BuildSystemPrompt(identity, soul string, env EnvironmentInfo, skillsSummary string) string {
 	identity = strings.TrimSpace(identity)
 	if identity == "" {
 		identity = BuildDefaultIdentity()
@@ -104,11 +105,16 @@ Enabled tools: %s
 Max tool-call iterations per turn: %d
 `, env.WorkDir, scope, fileRoots, enabledTools, maxIterations))
 
-	return strings.Join([]string{
+	parts := []string{
 		"# Identity\n" + identity,
 		"# Soul\n" + soul,
-		environment,
-	}, "\n\n---\n\n")
+	}
+	if strings.TrimSpace(skillsSummary) != "" {
+		parts = append(parts, skillsSummary)
+	}
+	parts = append(parts, environment)
+
+	return strings.Join(parts, "\n\n---\n\n")
 }
 
 // Config is the top-level profile document.
@@ -125,6 +131,7 @@ type Config struct {
 	Provider ProviderConfig `toml:"provider"`
 	Agent    AgentConfig    `toml:"agent"`
 	Files    FilesConfig    `toml:"files"`
+	Skills   SkillsConfig   `toml:"skills"`
 	Tools    ToolsConfig    `toml:"tools"`
 }
 
@@ -149,6 +156,12 @@ type AgentConfig struct {
 type FilesConfig struct {
 	Scope string   `toml:"scope"`
 	Roots []string `toml:"roots"`
+}
+
+// SkillsConfig declares where the runtime should look for local skill packs.
+type SkillsConfig struct {
+	Enabled *bool    `toml:"enabled"`
+	Roots   []string `toml:"roots"`
 }
 
 // ToolsConfig declares which built-in tools are enabled and how they are tuned.
@@ -285,13 +298,18 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		return nil, err
 	}
 
+	skillsSummary, err := c.buildSkillsSummary(workDir)
+	if err != nil {
+		return nil, err
+	}
+
 	systemPrompt := BuildSystemPrompt(c.Agent.Identity, c.Agent.Soul, EnvironmentInfo{
 		WorkDir:       workDir,
 		FilesScope:    string(pathPolicy.Scope),
 		FileRoots:     append([]string(nil), pathPolicy.Roots...),
 		EnabledTools:  c.enabledTools(),
 		MaxIterations: c.Agent.MaxIterations,
-	})
+	}, skillsSummary)
 
 	return &agent.Loop{
 		Model:         model,
@@ -420,6 +438,47 @@ func (c *Config) buildPathPolicy(workDir string) (builtintools.PathPolicy, error
 	default:
 		return builtintools.PathPolicy{}, fmt.Errorf("unsupported files.scope %q", c.Files.Scope)
 	}
+}
+
+func (c *Config) buildSkillsSummary(workDir string) (string, error) {
+	if c.Skills.Enabled != nil && !*c.Skills.Enabled {
+		return "", nil
+	}
+
+	roots, err := c.resolvedSkillRoots(workDir)
+	if err != nil {
+		return "", err
+	}
+
+	found, err := skills.Load(roots)
+	if err != nil {
+		return "", err
+	}
+	return skills.BuildSummary(found), nil
+}
+
+func (c *Config) resolvedSkillRoots(workDir string) ([]string, error) {
+	roots := c.Skills.Roots
+	if len(roots) == 0 {
+		return []string{filepath.Join(workDir, "skills")}, nil
+	}
+
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		if !filepath.IsAbs(root) {
+			root = filepath.Join(workDir, root)
+		}
+		absRoot, err := filepath.Abs(root)
+		if err != nil {
+			return nil, fmt.Errorf("could not resolve skill root %q: %w", root, err)
+		}
+		out = append(out, absRoot)
+	}
+	return out, nil
 }
 
 func (c *Config) enabledTools() []string {
