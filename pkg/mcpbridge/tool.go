@@ -63,17 +63,40 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) *tooling.Result
 	if text == "" {
 		text = "{}"
 	}
+	forModel, truncated := summarizeForModel(text, t.manager.MaxToolResponseChars())
 	return &tooling.Result{
-		ForModel: text,
+		ForModel: forModel,
 		ForUser:  fmt.Sprintf("Ran MCP tool %s", t.Name()),
 		Metadata: map[string]any{
-			"server":    t.serverName,
-			"tool":      t.tool.Name,
-			"mcp_tool":  true,
-			"is_error":  result.IsError,
-			"content_n": len(result.Content),
+			"server":              t.serverName,
+			"tool":                t.tool.Name,
+			"mcp_tool":            true,
+			"is_error":            result.IsError,
+			"content_n":           len(result.Content),
+			"for_model_length":    len(forModel),
+			"for_model_truncated": truncated,
+			"raw_text_length":     len(text),
 		},
 	}
+}
+
+func summarizeForModel(text string, maxChars int) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "{}", false
+	}
+	if maxChars <= 0 || len(trimmed) <= maxChars {
+		return trimmed, false
+	}
+
+	head := trimmed[:maxChars]
+	summary := fmt.Sprintf(
+		"MCP tool output truncated for model context. Original length: %d characters. Showing first %d characters.\n\n%s",
+		len(trimmed),
+		maxChars,
+		head,
+	)
+	return summary, true
 }
 
 func sanitizeIdentifier(value string) string {

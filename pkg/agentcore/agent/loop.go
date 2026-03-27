@@ -157,9 +157,10 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 		})
 	}()
 
+	var lastToolCallSignature string
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		meta := turnMeta.withIteration(iteration + 1)
-		messages, budgetReport := l.applyContextBudget(messages)
+		requestMessages, budgetReport := l.applyContextBudget(messages)
 		l.emit(meta, EventContextBudget, ContextBudgetPayload{
 			MessagesBefore:        budgetReport.MessagesBefore,
 			EstimatedTokensBefore: budgetReport.EstimatedTokensBefore,
@@ -182,7 +183,7 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 		_, streaming := l.Model.(provider.StreamingChatModel)
 		l.emit(meta, EventModelRequest, ModelRequestPayload{
 			Model:         l.ModelName,
-			MessagesCount: len(messages),
+			MessagesCount: len(requestMessages),
 			ToolsCount:    len(l.Tools.Definitions()),
 			Streaming:     streaming,
 		})
@@ -190,7 +191,7 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 		// Each pass asks the model either for:
 		// - a final answer, or
 		// - one or more tool calls.
-		response, err := l.callModel(ctx, meta, messages)
+		response, err := l.callModel(ctx, meta, requestMessages)
 		if err != nil {
 			finalStatus = TurnStatusError
 			l.emit(meta, EventError, ErrorPayload{
@@ -222,10 +223,22 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 
 		// No tool calls means the model considers the task finished.
 		if len(response.ToolCalls) == 0 {
+			lastToolCallSignature = ""
 			l.Sessions.AddMessage(sessionKey, "assistant", response.Content)
 			finalContent = response.Content
 			return response.Content, nil
 		}
+
+		signature := toolCallSignature(response.ToolCalls)
+		if signature != "" && signature == lastToolCallSignature {
+			finalStatus = TurnStatusError
+			l.emit(meta, EventError, ErrorPayload{
+				Stage:   "repeated_tool_calls",
+				Message: "model repeated the same tool calls without converging",
+			})
+			return "", fmt.Errorf("model repeated the same tool calls without converging")
+		}
+		lastToolCallSignature = signature
 
 		// Record the assistant message that requested tools.
 		//
@@ -419,4 +432,29 @@ func errorText(result *tooling.Result) string {
 		return ""
 	}
 	return result.Err.Error()
+}
+
+func toolCallSignature(calls []provider.ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+
+	type toolCallKey struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments,omitempty"`
+	}
+
+	keys := make([]toolCallKey, 0, len(calls))
+	for _, call := range calls {
+		keys = append(keys, toolCallKey{
+			Name:      call.Name,
+			Arguments: call.Arguments,
+		})
+	}
+
+	data, err := json.Marshal(keys)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

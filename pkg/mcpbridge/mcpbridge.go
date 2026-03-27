@@ -22,8 +22,9 @@ import (
 // source. This config therefore belongs to the bridge layer that translates
 // MCP servers into normal tooling.Tool values.
 type Config struct {
-	Enabled *bool                   `toml:"enabled"`
-	Servers map[string]ServerConfig `toml:"servers"`
+	Enabled              *bool                   `toml:"enabled"`
+	MaxToolResponseChars int                     `toml:"max_tool_response_chars"`
+	Servers              map[string]ServerConfig `toml:"servers"`
 }
 
 // ServerConfig describes one MCP server connection. The first version keeps a
@@ -45,13 +46,15 @@ type Connection struct {
 
 // Manager owns MCP client sessions and can expose them as normal runtime tools.
 type Manager struct {
-	mu      sync.Mutex
-	servers map[string]*Connection
+	mu                   sync.Mutex
+	servers              map[string]*Connection
+	maxToolResponseChars int
 }
 
-func NewManager() *Manager {
+func NewManager(maxToolResponseChars int) *Manager {
 	return &Manager{
-		servers: make(map[string]*Connection),
+		servers:              make(map[string]*Connection),
+		maxToolResponseChars: maxToolResponseChars,
 	}
 }
 
@@ -167,6 +170,13 @@ func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, arg
 		Name:      toolName,
 		Arguments: args,
 	})
+}
+
+func (m *Manager) MaxToolResponseChars() int {
+	if m == nil {
+		return 0
+	}
+	return m.maxToolResponseChars
 }
 
 func (m *Manager) Close() error {

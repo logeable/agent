@@ -50,6 +50,26 @@ func (m *capturingModel) Chat(
 	return &m.response, nil
 }
 
+type stepCapturingModel struct {
+	responses []*provider.Response
+	calls     [][]provider.Message
+}
+
+func (m *stepCapturingModel) Chat(
+	_ context.Context,
+	messages []provider.Message,
+	_ []provider.ToolDefinition,
+	_ string,
+	_ map[string]any,
+) (*provider.Response, error) {
+	if len(m.calls) >= len(m.responses) {
+		return nil, fmt.Errorf("unexpected extra model call")
+	}
+	snapshot := append([]provider.Message(nil), messages...)
+	m.calls = append(m.calls, snapshot)
+	return m.responses[len(m.calls)-1], nil
+}
+
 type streamingScriptedModel struct {
 	response provider.Response
 	chunks   []string
@@ -108,6 +128,33 @@ func (echoTool) Parameters() map[string]any {
 
 func (echoTool) Execute(_ context.Context, args map[string]any) *tooling.Result {
 	return &tooling.Result{ForModel: fmt.Sprintf("echo:%v", args["text"])}
+}
+
+type nthCompactCompactor struct {
+	compactOnCall int
+	calls         int
+}
+
+func (c *nthCompactCompactor) Compact(input ContextCompactInput) ContextCompactResult {
+	c.calls++
+	if c.calls != c.compactOnCall || len(input.Messages) < 2 {
+		return ContextCompactResult{
+			Messages: input.Messages,
+			Strategy: "keep_all",
+		}
+	}
+	compacted := []provider.Message{input.Messages[0], input.Messages[len(input.Messages)-1]}
+	return ContextCompactResult{
+		Messages:        compacted,
+		Strategy:        "nth_trim",
+		DroppedMessages: len(input.Messages) - len(compacted),
+	}
+}
+
+type estimatorFunc func([]provider.Message) int
+
+func (f estimatorFunc) EstimateMessages(messages []provider.Message) int {
+	return f(messages)
 }
 
 type approvalTool struct{}
@@ -193,6 +240,134 @@ func TestLoopToolRoundTrip(t *testing.T) {
 	}
 	if history[2].Role != "tool" || history[2].Content != "echo:ping" {
 		t.Fatalf("tool history = %+v, want tool echo result", history[2])
+	}
+}
+
+func TestLoopStopsOnRepeatedToolCalls(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*provider.Response{
+			{
+				Content: "Inspecting.",
+				ToolCalls: []provider.ToolCall{
+					{ID: "call-1", Name: "echo", Arguments: map[string]any{"text": "ping"}},
+				},
+			},
+			{
+				Content: "Inspecting again.",
+				ToolCalls: []provider.ToolCall{
+					{ID: "call-2", Name: "echo", Arguments: map[string]any{"text": "ping"}},
+				},
+			},
+		},
+	}
+	registry := tooling.NewRegistry()
+	registry.Register(echoTool{})
+
+	bus := NewEventBus()
+	defer bus.Close()
+	sub := bus.Subscribe(16)
+	defer bus.Unsubscribe(sub.ID)
+
+	loop := Loop{
+		Model:         model,
+		ModelName:     "test-model",
+		Tools:         registry,
+		Sessions:      session.NewMemoryStore(),
+		Context:       ContextBuilder{SystemPrompt: "You are an agent."},
+		MaxIterations: 4,
+		Events:        bus,
+	}
+
+	_, err := loop.Process(context.Background(), "s1", "run")
+	if err == nil {
+		t.Fatal("Process() error = nil, want repeated tool call error")
+	}
+	if got := err.Error(); got != "model repeated the same tool calls without converging" {
+		t.Fatalf("error = %q, want repeated tool call error", got)
+	}
+
+	var sawRepeatedError bool
+drain:
+	for {
+		select {
+		case evt := <-sub.C:
+			if evt.Kind != EventError {
+				continue
+			}
+			payload, ok := evt.Payload.(ErrorPayload)
+			if !ok {
+				t.Fatalf("payload type = %T, want ErrorPayload", evt.Payload)
+			}
+			if payload.Stage == "repeated_tool_calls" {
+				sawRepeatedError = true
+			}
+		default:
+			break drain
+		}
+	}
+
+	if !sawRepeatedError {
+		t.Fatal("expected repeated_tool_calls error event")
+	}
+}
+
+func TestLoopContextBudgetDoesNotOverwriteAccumulatedMessages(t *testing.T) {
+	model := &stepCapturingModel{
+		responses: []*provider.Response{
+			{
+				ToolCalls: []provider.ToolCall{
+					{ID: "call-1", Name: "echo", Arguments: map[string]any{"text": "one"}},
+				},
+			},
+			{
+				ToolCalls: []provider.ToolCall{
+					{ID: "call-2", Name: "echo", Arguments: map[string]any{"text": "two"}},
+				},
+			},
+			{Content: "done"},
+		},
+	}
+	registry := tooling.NewRegistry()
+	registry.Register(echoTool{})
+
+	compactor := &nthCompactCompactor{compactOnCall: 2}
+	loop := Loop{
+		Model:    model,
+		Tools:    registry,
+		Sessions: session.NewMemoryStore(),
+		Context:  ContextBuilder{SystemPrompt: "You are an agent."},
+		ContextBudget: ContextBudget{
+			MaxInputTokens: 1,
+			TargetFraction: 1,
+			Estimator: estimatorFunc(func(messages []provider.Message) int {
+				return 10
+			}),
+			Compactor: compactor,
+		},
+		MaxIterations: 4,
+	}
+
+	got, err := loop.Process(context.Background(), "s1", "run")
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if got != "done" {
+		t.Fatalf("Process() = %q, want done", got)
+	}
+	if len(model.calls) != 3 {
+		t.Fatalf("model calls = %d, want 3", len(model.calls))
+	}
+
+	thirdCall := model.calls[2]
+	var sawFirstToolResult bool
+	for _, msg := range thirdCall {
+		if msg.Role == "tool" && msg.Content == "echo:one" {
+			sawFirstToolResult = true
+			break
+		}
+	}
+	if !sawFirstToolResult {
+		t.Fatalf("third call messages = %+v, want preserved first tool result", thirdCall)
 	}
 }
 

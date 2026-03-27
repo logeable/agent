@@ -27,18 +27,18 @@ import (
 // - a real OpenAI-compatible model provider
 func main() {
 	var (
-		message      string
-		sessionKey   string
-		profileName  string
-		providerKind string
-		modelName    string
-		baseURL      string
-		apiKey       string
-		stream       bool
-		showReasoning bool
+		message          string
+		sessionKey       string
+		profileName      string
+		providerKind     string
+		modelName        string
+		baseURL          string
+		apiKey           string
+		stream           bool
+		showReasoning    bool
 		showReasoningSet bool
-		showEvents   bool
-		autoApprove  bool
+		showEvents       bool
+		autoApprove      bool
 	)
 
 	flag.StringVar(&message, "m", "", "Process a single message and exit")
@@ -244,7 +244,7 @@ func defaultCLIProfile() (*profile.Config, error) {
 		Tools: profile.ToolsConfig{
 			Enabled: []string{"read_file", "edit_file", "write_file", "bash", "web_fetch"},
 			ReadFile: profile.ReadFileToolConfig{
-				MaxBytes: 128 * 1024,
+				MaxBytes: 32 * 1024,
 			},
 			Bash: profile.BashToolConfig{
 				TimeoutMS:      30_000,

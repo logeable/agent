@@ -300,6 +300,8 @@ func formatToolFinishedSummary(payload agent.ToolFinishedPayload) string {
 	}
 	if sample, ok := stringMetadata(payload.Metadata, "output_sample"); ok && sample != "" {
 		parts = append(parts, fmt.Sprintf("sample=%q", truncateForLog(sample, 120)))
+	} else if payload.ForModel != "" {
+		parts = append(parts, fmt.Sprintf("output_length=%d for_model=%q", len(payload.ForModel), truncateForLog(payload.ForModel, 120)))
 	} else if payload.UserPreview != "" {
 		parts = append(parts, fmt.Sprintf("preview=%q", truncateForLog(payload.UserPreview, 80)))
 	}

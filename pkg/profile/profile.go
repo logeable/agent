@@ -422,7 +422,7 @@ func (c *Config) buildRegistry(
 		case "read_file":
 			registry.Register(builtintools.ReadFileTool{
 				PathPolicy: pathPolicy,
-				MaxBytes:   positiveInt64OrDefault(c.Tools.ReadFile.MaxBytes, 128*1024),
+				MaxBytes:   positiveInt64OrDefault(c.Tools.ReadFile.MaxBytes, 32*1024),
 			})
 		case "write_file":
 			registry.Register(builtintools.WriteFileTool{
@@ -474,7 +474,7 @@ func (c *Config) buildMCPRegistry(
 		return nil, nil
 	}
 
-	manager := mcpbridge.NewManager()
+	manager := mcpbridge.NewManager(positiveIntOrDefault(c.MCP.MaxToolResponseChars, 8*1024))
 	if err := manager.LoadStdioServers(ctx, c.MCP, workDir); err != nil {
 		return nil, err
 	}
