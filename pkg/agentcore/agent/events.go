@@ -17,6 +17,7 @@ const (
 	EventContextBudget     EventKind = "context_budget"
 	EventContextCompacted  EventKind = "context_compacted"
 	EventModelRequest      EventKind = "model_request"
+	EventModelRetry        EventKind = "model_retry"
 	EventModelUsage        EventKind = "model_usage"
 	EventModelDelta        EventKind = "model_delta"
 	EventModelReasoning    EventKind = "model_reasoning"
@@ -120,6 +121,14 @@ type ModelRequestPayload struct {
 	MessagesCount int
 	ToolsCount    int
 	Streaming     bool
+}
+
+// ModelRetryPayload describes one internal retry of a model call.
+type ModelRetryPayload struct {
+	Attempt     int
+	MaxAttempts int
+	ErrorKind   string
+	Reason      string
 }
 
 // ModelDeltaPayload describes one incremental streamed model chunk.

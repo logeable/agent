@@ -77,6 +77,9 @@ type model struct {
 	busy          bool
 	streamingSeen bool
 
+	lastContextEstimate int
+	lastContextBudget   int
+
 	awaitingApproval bool
 	approvalRequest  tooling.ApprovalRequest
 	approvalReply    chan bool
@@ -380,7 +383,17 @@ func (m *model) handleRuntimeEvent(evt agent.Event) {
 			return
 		}
 		m.appendReasoningDelta(payload.Delta)
-	case agent.EventContextBudget, agent.EventContextCompacted, agent.EventModelUsage:
+	case agent.EventContextBudget:
+		payload, ok := evt.Payload.(agent.ContextBudgetPayload)
+		if ok {
+			m.lastContextEstimate = payload.EstimatedTokensBefore
+			m.lastContextBudget = payload.BudgetTokens
+		}
+		m.updateActivity(evt)
+		if m.showEvents {
+			m.appendBlock(roleSystem, "Runtime", formatRuntimeEventBlock(evt))
+		}
+	case agent.EventContextCompacted, agent.EventModelUsage, agent.EventModelRetry:
 		m.updateActivity(evt)
 		if m.showEvents {
 			m.appendBlock(roleSystem, "Runtime", formatRuntimeEventBlock(evt))
@@ -532,6 +545,12 @@ func (m model) headerView() string {
 	rightParts := []string{
 		"session=" + m.sessionKey,
 	}
+	switch {
+	case m.lastContextEstimate > 0 && m.lastContextBudget > 0:
+		rightParts = append(rightParts, "ctx="+strconv.Itoa(m.lastContextEstimate)+"/"+strconv.Itoa(m.lastContextBudget))
+	case m.loop != nil && m.loop.ContextBudget.MaxInputTokens > 0:
+		rightParts = append(rightParts, "ctx_max="+strconv.Itoa(m.loop.ContextBudget.MaxInputTokens))
+	}
 	if m.busy {
 		rightParts = append(rightParts, "running")
 	}
@@ -676,6 +695,11 @@ func (m *model) updateActivity(evt agent.Event) {
 		if ok {
 			m.activity = "Thinking with " + payload.Model
 		}
+	case agent.EventModelRetry:
+		payload, ok := evt.Payload.(agent.ModelRetryPayload)
+		if ok {
+			m.activity = "Retrying model call (" + strconv.Itoa(payload.Attempt) + "/" + strconv.Itoa(payload.MaxAttempts) + ")"
+		}
 	case agent.EventContextBudget:
 		payload, ok := evt.Payload.(agent.ContextBudgetPayload)
 		if ok {
@@ -772,6 +796,20 @@ func formatRuntimeEventBlock(evt agent.Event) string {
 		line += "\nProvider input: " + strconv.Itoa(payload.InputTokens)
 		line += "\nOutput: " + strconv.Itoa(payload.OutputTokens)
 		line += "\nTotal: " + strconv.Itoa(payload.TotalTokens)
+		return line
+	case agent.EventModelRetry:
+		payload, ok := evt.Payload.(agent.ModelRetryPayload)
+		if !ok {
+			return agentclirun.FormatEventLine(evt)
+		}
+		line := "Retrying model call"
+		line += "\nAttempt: " + strconv.Itoa(payload.Attempt) + " / " + strconv.Itoa(payload.MaxAttempts)
+		if payload.ErrorKind != "" {
+			line += "\nError kind: " + payload.ErrorKind
+		}
+		if payload.Reason != "" {
+			line += "\nReason: " + truncateForStatus(payload.Reason, 120)
+		}
 		return line
 	default:
 		return agentclirun.FormatEventLine(evt)

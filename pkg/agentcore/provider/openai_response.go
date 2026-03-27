@@ -117,7 +117,7 @@ func (m *OpenAIResponseModel) Chat(
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
-		return nil, fmt.Errorf("provider error at %s (%d): %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, classifyHTTPError(fmt.Sprintf("provider error at %s", endpoint), resp.StatusCode, string(body), resp.Header)
 	}
 
 	var decoded openAIResponseEnvelope
@@ -178,7 +178,7 @@ func (m *OpenAIResponseModel) ChatStream(
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
-		return nil, fmt.Errorf("provider error at %s (%d): %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, classifyHTTPError(fmt.Sprintf("provider error at %s", endpoint), resp.StatusCode, string(body), resp.Header)
 	}
 
 	return parseOpenAIResponseStream(resp.Body, onChunk)
@@ -219,7 +219,7 @@ func (m *OpenAIResponseModel) doResponsesRequest(ctx context.Context, endpoint s
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+		return nil, classifyTransportError(err)
 	}
 	return resp, nil
 }

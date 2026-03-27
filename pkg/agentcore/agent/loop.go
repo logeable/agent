@@ -19,6 +19,11 @@ import (
 // A hard limit makes failure mode obvious and prevents runaway execution.
 const DefaultMaxIterations = 8
 
+const (
+	defaultModelCallAttempts       = 3
+	defaultContextOverflowAttempts = 1
+)
+
 // ApprovalRequiredError reports that a turn stopped because a tool requested
 // explicit approval before continuing.
 //
@@ -337,6 +342,68 @@ func (l *Loop) callModel(
 	meta EventMeta,
 	messages []provider.Message,
 ) (*provider.Response, error) {
+	currentMessages := append([]provider.Message(nil), messages...)
+	contextOverflowAttempts := 0
+
+	for attempt := 0; attempt < defaultModelCallAttempts; attempt++ {
+		response, err := l.callModelOnce(ctx, meta, currentMessages)
+		if err == nil {
+			return response, nil
+		}
+
+		modelErr, ok := provider.AsModelError(err)
+		if !ok {
+			return nil, err
+		}
+
+		switch modelErr.Kind {
+		case provider.ModelErrorRetryable:
+			if attempt+1 < defaultModelCallAttempts {
+				l.emit(meta, EventModelRetry, ModelRetryPayload{
+					Attempt:     attempt + 2,
+					MaxAttempts: defaultModelCallAttempts,
+					ErrorKind:   string(modelErr.Kind),
+					Reason:      modelErr.Error(),
+				})
+				continue
+			}
+		case provider.ModelErrorContextOverflow:
+			if contextOverflowAttempts < defaultContextOverflowAttempts {
+				compacted, compactedReport := l.compactMessagesForOverflow(currentMessages)
+				if !sameMessageSlice(compacted, currentMessages) {
+					currentMessages = compacted
+					contextOverflowAttempts++
+					l.emit(meta, EventContextCompacted, ContextCompactedPayload{
+						Strategy:              compactedReport.CompactionStrategy,
+						MessagesBefore:        compactedReport.MessagesBefore,
+						MessagesAfter:         compactedReport.MessagesAfter,
+						EstimatedTokensBefore: compactedReport.EstimatedTokensBefore,
+						EstimatedTokensAfter:  compactedReport.EstimatedTokensAfter,
+						BudgetTokens:          compactedReport.BudgetTokens,
+						TargetTokens:          compactedReport.TargetTokens,
+						DroppedMessages:       compactedReport.DroppedMessages,
+					})
+					l.emit(meta, EventModelRetry, ModelRetryPayload{
+						Attempt:     attempt + 2,
+						MaxAttempts: defaultModelCallAttempts,
+						ErrorKind:   string(modelErr.Kind),
+						Reason:      modelErr.Error(),
+					})
+					continue
+				}
+			}
+		}
+		return nil, err
+	}
+
+	return nil, fmt.Errorf("model call attempts exhausted")
+}
+
+func (l *Loop) callModelOnce(
+	ctx context.Context,
+	meta EventMeta,
+	messages []provider.Message,
+) (*provider.Response, error) {
 	if streamingModel, ok := l.Model.(provider.StreamingChatModel); ok {
 		return streamingModel.ChatStream(
 			ctx,
@@ -361,6 +428,43 @@ func (l *Loop) callModel(
 		)
 	}
 	return l.Model.Chat(ctx, messages, l.Tools.Definitions(), l.ModelName, l.Options)
+}
+
+func (l *Loop) compactMessagesForOverflow(messages []provider.Message) ([]provider.Message, ContextBudgetReport) {
+	report := ContextBudgetReport{
+		MessagesBefore: len(messages),
+		MessagesAfter:  len(messages),
+	}
+	if len(messages) <= 1 {
+		return messages, report
+	}
+
+	estimator := l.ContextBudget.estimator()
+	estimated := estimator.EstimateMessages(messages)
+	target := estimated / 2
+	if target <= 0 {
+		target = 1
+	}
+	report.EstimatedTokensBefore = estimated
+	report.EstimatedTokensAfter = estimated
+	report.BudgetTokens = estimated
+	report.TargetTokens = target
+
+	compacted := l.ContextBudget.compactor().Compact(ContextCompactInput{
+		Messages:        messages,
+		EstimatedTokens: estimated,
+		BudgetTokens:    estimated,
+		TargetTokens:    target,
+	}).Messages
+	if len(compacted) == 0 {
+		return messages, report
+	}
+	report.MessagesAfter = len(compacted)
+	report.EstimatedTokensAfter = estimator.EstimateMessages(compacted)
+	report.TriggeredCompaction = true
+	report.CompactionStrategy = "overflow_retry_trim"
+	report.DroppedMessages = len(messages) - len(compacted)
+	return compacted, report
 }
 
 func (l *Loop) emit(meta EventMeta, kind EventKind, payload any) {
@@ -457,4 +561,19 @@ func toolCallSignature(calls []provider.ToolCall) string {
 		return ""
 	}
 	return string(data)
+}
+
+func sameMessageSlice(a, b []provider.Message) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Role != b[i].Role || a[i].Content != b[i].Content || a[i].ToolCallID != b[i].ToolCallID {
+			return false
+		}
+		if toolCallSignature(a[i].ToolCalls) != toolCallSignature(b[i].ToolCalls) {
+			return false
+		}
+	}
+	return true
 }

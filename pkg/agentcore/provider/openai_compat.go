@@ -137,13 +137,13 @@ func (m *OpenAICompatModel) Chat(
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+		return nil, classifyTransportError(err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
-		return nil, fmt.Errorf("provider error (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, classifyHTTPError("provider error", resp.StatusCode, string(body), resp.Header)
 	}
 
 	var decoded openAICompatResponse
@@ -236,13 +236,13 @@ func (m *OpenAICompatModel) ChatStream(
 	client := &http.Client{Transport: m.httpClient.Transport}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+		return nil, classifyTransportError(err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
-		return nil, fmt.Errorf("provider error (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, classifyHTTPError("provider error", resp.StatusCode, string(body), resp.Header)
 	}
 
 	return parseOpenAICompatStream(resp.Body, onChunk)

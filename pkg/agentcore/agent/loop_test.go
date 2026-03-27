@@ -70,6 +70,31 @@ func (m *stepCapturingModel) Chat(
 	return m.responses[len(m.calls)-1], nil
 }
 
+type flakyModel struct {
+	responses []*provider.Response
+	errs      []error
+	calls     [][]provider.Message
+}
+
+func (m *flakyModel) Chat(
+	_ context.Context,
+	messages []provider.Message,
+	_ []provider.ToolDefinition,
+	_ string,
+	_ map[string]any,
+) (*provider.Response, error) {
+	snapshot := append([]provider.Message(nil), messages...)
+	m.calls = append(m.calls, snapshot)
+	idx := len(m.calls) - 1
+	if idx < len(m.errs) && m.errs[idx] != nil {
+		return nil, m.errs[idx]
+	}
+	if idx < len(m.responses) {
+		return m.responses[idx], nil
+	}
+	return nil, fmt.Errorf("unexpected extra model call")
+}
+
 type streamingScriptedModel struct {
 	response provider.Response
 	chunks   []string
@@ -368,6 +393,137 @@ func TestLoopContextBudgetDoesNotOverwriteAccumulatedMessages(t *testing.T) {
 	}
 	if !sawFirstToolResult {
 		t.Fatalf("third call messages = %+v, want preserved first tool result", thirdCall)
+	}
+}
+
+func TestLoopRetriesRetryableModelErrors(t *testing.T) {
+	model := &flakyModel{
+		errs: []error{
+			&provider.ModelError{Kind: provider.ModelErrorRetryable, Message: "temporary upstream failure"},
+		},
+		responses: []*provider.Response{
+			nil,
+			{Content: "done"},
+		},
+	}
+
+	bus := NewEventBus()
+	defer bus.Close()
+	sub := bus.Subscribe(16)
+	defer bus.Unsubscribe(sub.ID)
+
+	loop := Loop{
+		Model:    model,
+		Sessions: session.NewMemoryStore(),
+		Context:  ContextBuilder{SystemPrompt: "You are an agent."},
+		Events:   bus,
+	}
+
+	got, err := loop.Process(context.Background(), "s1", "hi")
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if got != "done" {
+		t.Fatalf("Process() = %q, want done", got)
+	}
+	if len(model.calls) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(model.calls))
+	}
+
+	var sawRetry bool
+drain:
+	for {
+		select {
+		case evt := <-sub.C:
+			if evt.Kind != EventModelRetry {
+				continue
+			}
+			payload, ok := evt.Payload.(ModelRetryPayload)
+			if !ok {
+				t.Fatalf("payload type = %T, want ModelRetryPayload", evt.Payload)
+			}
+			if payload.ErrorKind == string(provider.ModelErrorRetryable) {
+				sawRetry = true
+			}
+		default:
+			break drain
+		}
+	}
+	if !sawRetry {
+		t.Fatal("expected model_retry event")
+	}
+}
+
+func TestLoopRetriesContextOverflowWithCompaction(t *testing.T) {
+	store := session.NewMemoryStore()
+	store.AddMessage("s1", "user", "older user message")
+	store.AddMessage("s1", "assistant", "older assistant message")
+
+	model := &flakyModel{
+		errs: []error{
+			&provider.ModelError{Kind: provider.ModelErrorContextOverflow, Message: "context too long"},
+		},
+		responses: []*provider.Response{
+			nil,
+			{Content: "done"},
+		},
+	}
+
+	bus := NewEventBus()
+	defer bus.Close()
+	sub := bus.Subscribe(16)
+	defer bus.Unsubscribe(sub.ID)
+
+	loop := Loop{
+		Model:    model,
+		Sessions: store,
+		Context:  ContextBuilder{SystemPrompt: "System prompt"},
+		Events:   bus,
+	}
+
+	got, err := loop.Process(context.Background(), "s1", "latest question")
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if got != "done" {
+		t.Fatalf("Process() = %q, want done", got)
+	}
+	if len(model.calls) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(model.calls))
+	}
+	if len(model.calls[1]) >= len(model.calls[0]) {
+		t.Fatalf("retry call len = %d, want less than first call len %d", len(model.calls[1]), len(model.calls[0]))
+	}
+	last := model.calls[1][len(model.calls[1])-1]
+	if last.Role != "user" || last.Content != "latest question" {
+		t.Fatalf("last retry message = %+v, want latest user message", last)
+	}
+
+	var sawCompacted bool
+drain:
+	for {
+		select {
+		case evt := <-sub.C:
+			if evt.Kind != EventContextCompacted {
+				continue
+			}
+			payload, ok := evt.Payload.(ContextCompactedPayload)
+			if !ok {
+				t.Fatalf("payload type = %T, want ContextCompactedPayload", evt.Payload)
+			}
+			if payload.Strategy != "overflow_retry_trim" {
+				t.Fatalf("strategy = %q, want overflow_retry_trim", payload.Strategy)
+			}
+			if payload.MessagesAfter >= payload.MessagesBefore {
+				t.Fatalf("messages after = %d, want less than before %d", payload.MessagesAfter, payload.MessagesBefore)
+			}
+			sawCompacted = true
+		default:
+			break drain
+		}
+	}
+	if !sawCompacted {
+		t.Fatal("expected context_compacted event during overflow retry")
 	}
 }
 
