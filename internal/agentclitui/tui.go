@@ -21,6 +21,7 @@ type Options struct {
 	SessionKey  string
 	ProfileName string
 	Stream      bool
+	ShowReasoning bool
 	ShowEvents  bool
 	AutoApprove bool
 }
@@ -60,6 +61,7 @@ type model struct {
 	profileName string
 	sessionKey string
 	stream     bool
+	showReasoning bool
 
 	input          textarea.Model
 	messageView    viewport.Model
@@ -161,6 +163,7 @@ func newModel(loop *agent.Loop, opts Options) model {
 		profileName:        strings.TrimSpace(opts.ProfileName),
 		sessionKey:         opts.SessionKey,
 		stream:             opts.Stream,
+		showReasoning:      opts.ShowReasoning,
 		input:              input,
 		messageView:        messageView,
 		status:             "Ready",
@@ -351,6 +354,9 @@ func (m *model) handleRuntimeEvent(evt agent.Event) {
 		m.appendAssistantDelta(payload.Delta)
 		m.streamingSeen = true
 	case agent.EventModelReasoning:
+		if !m.showReasoning {
+			return
+		}
 		payload, ok := evt.Payload.(agent.ModelReasoningPayload)
 		if !ok || payload.Delta == "" {
 			return
@@ -596,8 +602,20 @@ func summarizeReasoning(body string) string {
 	if body == "" {
 		return "Thinking...  (Ctrl+R to expand)"
 	}
-	singleLine := strings.Join(strings.Fields(body), " ")
-	return truncateForStatus(singleLine, 120) + "  (Ctrl+R to expand)"
+	lines := strings.Split(body, "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last == "" {
+		for i := len(lines) - 2; i >= 0; i-- {
+			last = strings.TrimSpace(lines[i])
+			if last != "" {
+				break
+			}
+		}
+	}
+	if last == "" {
+		last = strings.Join(strings.Fields(body), " ")
+	}
+	return truncateForStatus(last, 120) + "  (Ctrl+R to expand)"
 }
 
 func (m model) hasReasoning() bool {

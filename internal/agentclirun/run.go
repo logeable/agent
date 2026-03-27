@@ -17,6 +17,7 @@ type SingleRunOptions struct {
 	SessionKey  string
 	Message     string
 	Stream      bool
+	ShowReasoning bool
 	ShowEvents  bool
 	AutoApprove bool
 }
@@ -27,7 +28,7 @@ type SingleRunOptions struct {
 func RunSingleMessage(loop *agent.Loop, opts SingleRunOptions) (int, error) {
 	loop.Approval = BuildCLIApprovalHandler(opts.AutoApprove)
 
-	stopStreaming := startStreamingPrinter(loop.Events, opts.Stream)
+	stopStreaming := startStreamingPrinter(loop.Events, opts.Stream, opts.ShowReasoning)
 	stopEvents := startEventPrinter(loop.Events, opts.ShowEvents)
 	defer stopEvents()
 
@@ -93,7 +94,7 @@ func promptForApprovalCLI(_ context.Context, req tooling.ApprovalRequest) (bool,
 	return answer == "y" || answer == "yes", nil
 }
 
-func startStreamingPrinter(events *agent.EventBus, enabled bool) func() bool {
+func startStreamingPrinter(events *agent.EventBus, enabled bool, showReasoning bool) func() bool {
 	if !enabled || events == nil {
 		return func() bool { return false }
 	}
@@ -114,6 +115,9 @@ func startStreamingPrinter(events *agent.EventBus, enabled bool) func() bool {
 				printedAny.Store(true)
 				fmt.Print(payload.Delta)
 			case agent.EventModelReasoning:
+				if !showReasoning {
+					continue
+				}
 				payload, ok := evt.Payload.(agent.ModelReasoningPayload)
 				if !ok || payload.Delta == "" {
 					continue

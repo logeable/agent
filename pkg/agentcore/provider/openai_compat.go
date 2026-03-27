@@ -333,7 +333,7 @@ type openAICompatStreamEnvelope struct {
 			Content          string `json:"content"`
 			Reasoning        string `json:"reasoning"`
 			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls []struct {
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`

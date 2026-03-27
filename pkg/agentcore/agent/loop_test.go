@@ -191,11 +191,10 @@ func TestLoopEmitsStreamingEvents(t *testing.T) {
 	defer bus.Unsubscribe(sub.ID)
 
 	loop := Loop{
-		Model:         model,
-		Sessions:      store,
-		Context:       ContextBuilder{SystemPrompt: "You are an agent."},
-		Events:        bus,
-		ShowReasoning: true,
+		Model:    model,
+		Sessions: store,
+		Context:  ContextBuilder{SystemPrompt: "You are an agent."},
+		Events:   bus,
 	}
 
 	got, err := loop.Process(context.Background(), "s1", "hi")
@@ -244,11 +243,10 @@ func TestLoopEmitsReasoningEvents(t *testing.T) {
 	defer bus.Unsubscribe(sub.ID)
 
 	loop := Loop{
-		Model:         model,
-		Sessions:      store,
-		Context:       ContextBuilder{SystemPrompt: "You are an agent."},
-		Events:        bus,
-		ShowReasoning: true,
+		Model:    model,
+		Sessions: store,
+		Context:  ContextBuilder{SystemPrompt: "You are an agent."},
+		Events:   bus,
 	}
 
 	_, err := loop.Process(context.Background(), "s1", "hi")

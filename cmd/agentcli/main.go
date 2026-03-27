@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/logeable/agent/internal/agentclirun"
@@ -35,6 +36,7 @@ func main() {
 		apiKey       string
 		stream       bool
 		showReasoning bool
+		showReasoningSet bool
 		showEvents   bool
 		autoApprove  bool
 	)
@@ -47,7 +49,15 @@ func main() {
 	flag.StringVar(&baseURL, "base-url", "", "Base URL for OpenAI-compatible providers")
 	flag.StringVar(&apiKey, "api-key", "", "API key for OpenAI-compatible providers")
 	flag.BoolVar(&stream, "stream", true, "Render model delta events when the provider supports streaming")
-	flag.BoolVar(&showReasoning, "show-reasoning", false, "Show streamed reasoning when the provider emits it")
+	flag.Func("show-reasoning", "Show streamed reasoning when the provider emits it", func(value string) error {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		showReasoning = parsed
+		showReasoningSet = true
+		return nil
+	})
 	flag.BoolVar(&showEvents, "events", false, "Show key runtime events")
 	flag.BoolVar(&autoApprove, "auto-approve", false, "Automatically approve tool approval requests")
 	flag.Parse()
@@ -60,8 +70,6 @@ func main() {
 	defer loop.Close()
 	loop.Events = agent.NewEventBus()
 	defer loop.Events.Close()
-	loop.ShowReasoning = showReasoning
-
 	stdinMessage, err := readMessageFromStdin(os.Stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -76,12 +84,16 @@ func main() {
 	}
 
 	if strings.TrimSpace(message) != "" {
+		if !showReasoningSet {
+			showReasoning = false
+		}
 		exitCode, err := agentclirun.RunSingleMessage(loop, agentclirun.SingleRunOptions{
-			SessionKey:  sessionKey,
-			Message:     message,
-			Stream:      stream,
-			ShowEvents:  showEvents,
-			AutoApprove: autoApprove,
+			SessionKey:    sessionKey,
+			Message:       message,
+			Stream:        stream,
+			ShowReasoning: showReasoning,
+			ShowEvents:    showEvents,
+			AutoApprove:   autoApprove,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -90,12 +102,17 @@ func main() {
 		return
 	}
 
+	if !showReasoningSet {
+		showReasoning = true
+	}
+
 	if err := agentclitui.Run(loop, agentclitui.Options{
-		SessionKey:  sessionKey,
-		ProfileName: displayProfileName(profileName),
-		Stream:      stream,
-		ShowEvents:  showEvents,
-		AutoApprove: autoApprove,
+		SessionKey:    sessionKey,
+		ProfileName:   displayProfileName(profileName),
+		Stream:        stream,
+		ShowReasoning: showReasoning,
+		ShowEvents:    showEvents,
+		AutoApprove:   autoApprove,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
