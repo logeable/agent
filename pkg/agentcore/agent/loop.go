@@ -88,6 +88,7 @@ type Loop struct {
 	Context       ContextBuilder
 	MaxIterations int
 	Options       map[string]any
+	ShowReasoning bool
 	Events        *EventBus
 	Approval      ApprovalHandler
 	nextTurnID    atomic.Uint64
@@ -304,10 +305,21 @@ func (l *Loop) callModel(
 			l.ModelName,
 			l.Options,
 			func(chunk provider.StreamChunk) {
-				l.emit(meta, EventModelDelta, ModelDeltaPayload{
-					Delta:       chunk.Delta,
-					Accumulated: chunk.Accumulated,
-				})
+				switch chunk.Kind {
+				case provider.StreamChunkKindReasoning:
+					if !l.ShowReasoning {
+						return
+					}
+					l.emit(meta, EventModelReasoning, ModelReasoningPayload{
+						Delta:       chunk.Delta,
+						Accumulated: chunk.Accumulated,
+					})
+				default:
+					l.emit(meta, EventModelDelta, ModelDeltaPayload{
+						Delta:       chunk.Delta,
+						Accumulated: chunk.Accumulated,
+					})
+				}
 			},
 		)
 	}

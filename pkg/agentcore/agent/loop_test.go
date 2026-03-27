@@ -36,6 +36,7 @@ func (m *scriptedModel) Chat(
 type streamingScriptedModel struct {
 	response provider.Response
 	chunks   []string
+	kinds    []provider.StreamChunkKind
 }
 
 func (m *streamingScriptedModel) Chat(
@@ -59,7 +60,13 @@ func (m *streamingScriptedModel) ChatStream(
 	var accumulated string
 	for _, chunk := range m.chunks {
 		accumulated += chunk
+		kind := provider.StreamChunkKindOutputText
+		if len(m.kinds) > 0 {
+			kind = m.kinds[0]
+			m.kinds = m.kinds[1:]
+		}
 		onChunk(provider.StreamChunk{
+			Kind:        kind,
 			Delta:       chunk,
 			Accumulated: accumulated,
 		})
@@ -184,10 +191,11 @@ func TestLoopEmitsStreamingEvents(t *testing.T) {
 	defer bus.Unsubscribe(sub.ID)
 
 	loop := Loop{
-		Model:    model,
-		Sessions: store,
-		Context:  ContextBuilder{SystemPrompt: "You are an agent."},
-		Events:   bus,
+		Model:         model,
+		Sessions:      store,
+		Context:       ContextBuilder{SystemPrompt: "You are an agent."},
+		Events:        bus,
+		ShowReasoning: true,
 	}
 
 	got, err := loop.Process(context.Background(), "s1", "hi")
@@ -217,6 +225,56 @@ drain:
 
 	if len(deltas) != 2 || deltas[0] != "he" || deltas[1] != "llo" {
 		t.Fatalf("deltas = %#v, want [he llo]", deltas)
+	}
+}
+
+func TestLoopEmitsReasoningEvents(t *testing.T) {
+	model := &streamingScriptedModel{
+		response: provider.Response{Content: "hello"},
+		chunks:   []string{"think ", "done"},
+		kinds: []provider.StreamChunkKind{
+			provider.StreamChunkKindReasoning,
+			provider.StreamChunkKindReasoning,
+		},
+	}
+	store := session.NewMemoryStore()
+	bus := NewEventBus()
+	defer bus.Close()
+	sub := bus.Subscribe(16)
+	defer bus.Unsubscribe(sub.ID)
+
+	loop := Loop{
+		Model:         model,
+		Sessions:      store,
+		Context:       ContextBuilder{SystemPrompt: "You are an agent."},
+		Events:        bus,
+		ShowReasoning: true,
+	}
+
+	_, err := loop.Process(context.Background(), "s1", "hi")
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+
+	var deltas []string
+drain:
+	for {
+		select {
+		case evt := <-sub.C:
+			if evt.Kind == EventModelReasoning {
+				payload, ok := evt.Payload.(ModelReasoningPayload)
+				if !ok {
+					t.Fatalf("payload type = %T, want ModelReasoningPayload", evt.Payload)
+				}
+				deltas = append(deltas, payload.Delta)
+			}
+		default:
+			break drain
+		}
+	}
+
+	if len(deltas) != 2 || deltas[0] != "think " || deltas[1] != "done" {
+		t.Fatalf("deltas = %#v, want [think  done]", deltas)
 	}
 }
 

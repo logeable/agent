@@ -62,6 +62,13 @@ type Response struct {
 	ToolCalls []ToolCall
 }
 
+type StreamChunkKind string
+
+const (
+	StreamChunkKindOutputText StreamChunkKind = "output_text"
+	StreamChunkKindReasoning  StreamChunkKind = "reasoning"
+)
+
 // StreamChunk represents one incremental piece of streamed model output.
 //
 // What:
@@ -72,6 +79,7 @@ type Response struct {
 // terminals often print only the delta, while stateful UIs usually want the
 // full accumulated text. Returning both keeps the boundary flexible.
 type StreamChunk struct {
+	Kind        StreamChunkKind
 	Delta       string
 	Accumulated string
 }

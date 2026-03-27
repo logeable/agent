@@ -34,6 +34,10 @@ kind = "openai"
 api_key = "dummy-key"
 model = "gpt-5"
 
+[provider.options]
+reasoning_effort = "medium"
+temperature = 0.2
+
 [agent]
 id = "coding-agent"
 identity = "You are precise."
@@ -99,6 +103,12 @@ max_bytes = 8192
 	}
 	if loop.MaxIterations != 12 {
 		t.Fatalf("MaxIterations = %d, want 12", loop.MaxIterations)
+	}
+	if got := loop.Options["reasoning_effort"]; got != "medium" {
+		t.Fatalf("loop.Options[reasoning_effort] = %v, want medium", got)
+	}
+	if got := loop.Options["temperature"]; got != float64(0.2) {
+		t.Fatalf("loop.Options[temperature] = %#v, want 0.2", got)
 	}
 	if len(loop.Tools.Definitions()) != 3 {
 		t.Fatalf("tool definitions = %d, want 3", len(loop.Tools.Definitions()))

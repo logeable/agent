@@ -116,7 +116,7 @@ func (m *OpenAICompatModel) Chat(
 		reqBody.Temperature = &temperature
 	}
 
-	payload, err := json.Marshal(reqBody)
+	payload, err := marshalOpenAICompatRequest(reqBody, options)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -212,7 +212,7 @@ func (m *OpenAICompatModel) ChatStream(
 		reqBody.Temperature = &temperature
 	}
 
-	payload, err := json.Marshal(reqBody)
+	payload, err := marshalOpenAICompatRequest(reqBody, options)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -257,6 +257,38 @@ type openAICompatRequest struct {
 	Stream      bool                  `json:"stream,omitempty"`
 }
 
+func marshalOpenAICompatRequest(req openAICompatRequest, options map[string]any) ([]byte, error) {
+	body := map[string]any{
+		"model":    req.Model,
+		"messages": req.Messages,
+	}
+	if len(req.Tools) > 0 {
+		body["tools"] = req.Tools
+	}
+	if req.ToolChoice != "" {
+		body["tool_choice"] = req.ToolChoice
+	}
+	if req.MaxTokens != nil {
+		body["max_tokens"] = *req.MaxTokens
+	}
+	if req.Temperature != nil {
+		body["temperature"] = *req.Temperature
+	}
+	if req.Stream {
+		body["stream"] = true
+	}
+	mergeExtraRequestOptions(body, options, map[string]struct{}{
+		"model":       {},
+		"messages":    {},
+		"tools":       {},
+		"tool_choice": {},
+		"max_tokens":  {},
+		"temperature": {},
+		"stream":      {},
+	})
+	return json.Marshal(body)
+}
+
 type openAICompatMessage struct {
 	Role       string                     `json:"role"`
 	Content    string                     `json:"content"`
@@ -298,7 +330,9 @@ type openAICompatResponse struct {
 type openAICompatStreamEnvelope struct {
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
+			Content          string `json:"content"`
+			Reasoning        string `json:"reasoning"`
+			ReasoningContent string `json:"reasoning_content"`
 			ToolCalls []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
@@ -397,6 +431,7 @@ func parseOpenAICompatStream(reader io.Reader, onChunk func(StreamChunk)) (*Resp
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var accumulated strings.Builder
+	var reasoning strings.Builder
 	type toolAssembly struct {
 		id        string
 		name      string
@@ -431,8 +466,24 @@ func parseOpenAICompatStream(reader io.Reader, onChunk func(StreamChunk)) (*Resp
 			accumulated.WriteString(delta)
 			if onChunk != nil {
 				onChunk(StreamChunk{
+					Kind:        StreamChunkKindOutputText,
 					Delta:       delta,
 					Accumulated: accumulated.String(),
+				})
+			}
+		}
+
+		reasoningDelta := chunk.Choices[0].Delta.ReasoningContent
+		if reasoningDelta == "" {
+			reasoningDelta = chunk.Choices[0].Delta.Reasoning
+		}
+		if reasoningDelta != "" {
+			reasoning.WriteString(reasoningDelta)
+			if onChunk != nil {
+				onChunk(StreamChunk{
+					Kind:        StreamChunkKindReasoning,
+					Delta:       reasoningDelta,
+					Accumulated: reasoning.String(),
 				})
 			}
 		}

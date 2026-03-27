@@ -105,15 +105,22 @@ func startStreamingPrinter(events *agent.EventBus, enabled bool) func() bool {
 	go func() {
 		defer close(stopped)
 		for evt := range sub.C {
-			if evt.Kind != agent.EventModelDelta {
-				continue
+			switch evt.Kind {
+			case agent.EventModelDelta:
+				payload, ok := evt.Payload.(agent.ModelDeltaPayload)
+				if !ok || payload.Delta == "" {
+					continue
+				}
+				printedAny.Store(true)
+				fmt.Print(payload.Delta)
+			case agent.EventModelReasoning:
+				payload, ok := evt.Payload.(agent.ModelReasoningPayload)
+				if !ok || payload.Delta == "" {
+					continue
+				}
+				// Reasoning belongs on stderr so stdout remains pipeline-friendly.
+				fmt.Fprint(os.Stderr, payload.Delta)
 			}
-			payload, ok := evt.Payload.(agent.ModelDeltaPayload)
-			if !ok || payload.Delta == "" {
-				continue
-			}
-			printedAny.Store(true)
-			fmt.Print(payload.Delta)
 		}
 	}()
 
@@ -232,6 +239,13 @@ func FormatEventLine(evt agent.Event) string {
 			return prefix
 		}
 		return fmt.Sprintf("%s status=%s final_len=%d", prefix, payload.Status, len(payload.FinalContent))
+	case agent.EventModelReasoning:
+		payload, ok := evt.Payload.(agent.ModelReasoningPayload)
+		if !ok {
+			return prefix
+		}
+		return fmt.Sprintf("%s iteration=%d delta=%q",
+			prefix, evt.Meta.Iteration, truncateForLog(payload.Delta, 120))
 	default:
 		return ""
 	}

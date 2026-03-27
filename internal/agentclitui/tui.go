@@ -19,6 +19,7 @@ import (
 // into cmd/agentcli.
 type Options struct {
 	SessionKey  string
+	ProfileName string
 	Stream      bool
 	ShowEvents  bool
 	AutoApprove bool
@@ -44,6 +45,7 @@ const (
 	roleSystem    messageRole = "system"
 	roleUser      messageRole = "user"
 	roleAssistant messageRole = "assistant"
+	roleReasoning messageRole = "reasoning"
 	roleError     messageRole = "error"
 )
 
@@ -55,6 +57,7 @@ type messageBlock struct {
 
 type model struct {
 	loop       *agent.Loop
+	profileName string
 	sessionKey string
 	stream     bool
 
@@ -77,7 +80,9 @@ type model struct {
 
 	messages           []messageBlock
 	activeAssistantIdx int
+	activeReasoningIdx int
 	activeToolIdx      int
+	reasoningExpanded  bool
 }
 
 // Run starts the interactive TUI for agentcli. The CLI entrypoint stays small
@@ -153,6 +158,7 @@ func newModel(loop *agent.Loop, opts Options) model {
 
 	m := model{
 		loop:               loop,
+		profileName:        strings.TrimSpace(opts.ProfileName),
 		sessionKey:         opts.SessionKey,
 		stream:             opts.Stream,
 		input:              input,
@@ -163,6 +169,7 @@ func newModel(loop *agent.Loop, opts Options) model {
 		footerHeight:       2,
 		approvalHeight:     0,
 		activeAssistantIdx: -1,
+		activeReasoningIdx: -1,
 		activeToolIdx:      -1,
 	}
 	return m
@@ -199,6 +206,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.streamingSeen = false
 			m.activeAssistantIdx = -1
+			m.activeReasoningIdx = -1
 			return m, nil
 		}
 		if !m.streamingSeen && strings.TrimSpace(msg.response) != "" {
@@ -208,6 +216,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.streamingSeen = false
 		m.activeAssistantIdx = -1
+		m.activeReasoningIdx = -1
 		m.activeToolIdx = -1
 		m.status = "Ready"
 		return m, nil
@@ -249,6 +258,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.InsertString("\n")
 			m.refreshLayout()
 			return m, nil
+		case tea.KeyCtrlR:
+			m.reasoningExpanded = !m.reasoningExpanded
+			m.rebuildTranscript()
+			return m, nil
 		case tea.KeyEnter:
 			if m.busy {
 				return m, nil
@@ -261,6 +274,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			m.streamingSeen = false
 			m.activeAssistantIdx = -1
+			m.activeReasoningIdx = -1
 			m.status = "Running"
 			m.appendBlock(roleUser, "You", line)
 			return m, m.processMessageCmd(line)
@@ -336,6 +350,12 @@ func (m *model) handleRuntimeEvent(evt agent.Event) {
 		}
 		m.appendAssistantDelta(payload.Delta)
 		m.streamingSeen = true
+	case agent.EventModelReasoning:
+		payload, ok := evt.Payload.(agent.ModelReasoningPayload)
+		if !ok || payload.Delta == "" {
+			return
+		}
+		m.appendReasoningDelta(payload.Delta)
 	default:
 		m.updateActivity(evt)
 		m.updateToolBlock(evt)
@@ -378,6 +398,18 @@ func (m *model) appendAssistantDelta(delta string) {
 	m.rebuildTranscript()
 }
 
+func (m *model) appendReasoningDelta(delta string) {
+	if m.activeReasoningIdx < 0 || m.activeReasoningIdx >= len(m.messages) || m.messages[m.activeReasoningIdx].role != roleReasoning {
+		m.messages = append(m.messages, messageBlock{
+			role:  roleReasoning,
+			title: "Reasoning",
+		})
+		m.activeReasoningIdx = len(m.messages) - 1
+	}
+	m.messages[m.activeReasoningIdx].content += delta
+	m.rebuildTranscript()
+}
+
 func (m *model) normalizeActiveAssistant() {
 	if m.activeAssistantIdx < 0 || m.activeAssistantIdx >= len(m.messages) {
 		return
@@ -395,7 +427,7 @@ func (m model) renderTranscript() string {
 	width := maxInt(20, m.messageView.Width)
 	blocks := make([]string, 0, len(m.messages))
 	for _, block := range m.messages {
-		blocks = append(blocks, renderMessageBlock(block, width))
+		blocks = append(blocks, renderMessageBlock(block, width, m.reasoningExpanded))
 	}
 	return strings.Join(blocks, "\n\n")
 }
@@ -436,13 +468,24 @@ func (m model) statusView() string {
 	if m.activity != "" {
 		parts = append(parts, m.activity)
 	}
+	if m.hasReasoning() {
+		if m.reasoningExpanded {
+			parts = append(parts, "reasoning:expanded")
+		} else {
+			parts = append(parts, "reasoning:collapsed")
+		}
+	}
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("250")).
 		Render(strings.Join(parts, " | "))
 }
 
 func (m model) headerView() string {
-	left := "agentcli"
+	leftParts := []string{"agentcli"}
+	if m.profileName != "" {
+		leftParts = append(leftParts, "profile="+m.profileName)
+	}
+	left := strings.Join(leftParts, " | ")
 	rightParts := []string{
 		"session=" + m.sessionKey,
 	}
@@ -495,7 +538,7 @@ func (m *model) refreshLayout() {
 	m.messageView.GotoBottom()
 }
 
-func renderMessageBlock(block messageBlock, width int) string {
+func renderMessageBlock(block messageBlock, width int, reasoningExpanded bool) string {
 	titleStyle := lipgloss.NewStyle().Bold(true)
 	boxStyle := lipgloss.NewStyle().
 		Padding(0, 1)
@@ -512,6 +555,12 @@ func renderMessageBlock(block messageBlock, width int) string {
 			Align(lipgloss.Left).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("42"))
+	case roleReasoning:
+		titleStyle = titleStyle.Foreground(lipgloss.Color("214"))
+		boxStyle = boxStyle.
+			Align(lipgloss.Left).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("214"))
 	case roleError:
 		titleStyle = titleStyle.Foreground(lipgloss.Color("203"))
 		boxStyle = boxStyle.
@@ -533,10 +582,31 @@ func renderMessageBlock(block messageBlock, width int) string {
 	if body == "" {
 		body = " "
 	}
+	if block.role == roleReasoning && !reasoningExpanded {
+		body = summarizeReasoning(body)
+	}
 	return boxStyle.Width(contentWidth).Render(
 		titleStyle.Render(block.title) + "\n" +
 			bodyStyle.Render(body),
 	)
+}
+
+func summarizeReasoning(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return "Thinking...  (Ctrl+R to expand)"
+	}
+	singleLine := strings.Join(strings.Fields(body), " ")
+	return truncateForStatus(singleLine, 120) + "  (Ctrl+R to expand)"
+}
+
+func (m model) hasReasoning() bool {
+	for _, block := range m.messages {
+		if block.role == roleReasoning {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *model) updateActivity(evt agent.Event) {

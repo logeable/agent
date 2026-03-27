@@ -34,6 +34,7 @@ func main() {
 		baseURL      string
 		apiKey       string
 		stream       bool
+		showReasoning bool
 		showEvents   bool
 		autoApprove  bool
 	)
@@ -46,6 +47,7 @@ func main() {
 	flag.StringVar(&baseURL, "base-url", "", "Base URL for OpenAI-compatible providers")
 	flag.StringVar(&apiKey, "api-key", "", "API key for OpenAI-compatible providers")
 	flag.BoolVar(&stream, "stream", true, "Render model delta events when the provider supports streaming")
+	flag.BoolVar(&showReasoning, "show-reasoning", false, "Show streamed reasoning when the provider emits it")
 	flag.BoolVar(&showEvents, "events", false, "Show key runtime events")
 	flag.BoolVar(&autoApprove, "auto-approve", false, "Automatically approve tool approval requests")
 	flag.Parse()
@@ -58,6 +60,7 @@ func main() {
 	defer loop.Close()
 	loop.Events = agent.NewEventBus()
 	defer loop.Events.Close()
+	loop.ShowReasoning = showReasoning
 
 	stdinMessage, err := readMessageFromStdin(os.Stdin)
 	if err != nil {
@@ -89,6 +92,7 @@ func main() {
 
 	if err := agentclitui.Run(loop, agentclitui.Options{
 		SessionKey:  sessionKey,
+		ProfileName: displayProfileName(profileName),
 		Stream:      stream,
 		ShowEvents:  showEvents,
 		AutoApprove: autoApprove,
@@ -194,6 +198,18 @@ func resolveProfileArgumentWithHome(value, homeDir string) string {
 	}
 
 	return trimmed
+}
+
+func displayProfileName(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if filepath.IsAbs(value) || strings.ContainsRune(value, filepath.Separator) {
+		base := filepath.Base(value)
+		return strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	return strings.TrimSuffix(value, ".toml")
 }
 
 func defaultCLIProfile() (*profile.Config, error) {

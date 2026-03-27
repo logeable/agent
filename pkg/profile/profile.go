@@ -147,6 +147,7 @@ type ProviderConfig struct {
 	APIKey    string `toml:"api_key"`
 	APIKeyEnv string `toml:"api_key_env"`
 	Model     string `toml:"model"`
+	Options   map[string]any `toml:"options"`
 }
 
 // AgentConfig declares instance-level runtime parameters.
@@ -332,6 +333,7 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		Tools:         registry,
 		Sessions:      session.NewMemoryStore(),
 		MaxIterations: c.Agent.MaxIterations,
+		Options:       c.buildModelOptions(),
 		Context: agent.ContextBuilder{
 			SystemPrompt: systemPrompt,
 		},
@@ -340,6 +342,17 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		loop.AddCloser(mcpManager.Close)
 	}
 	return loop, nil
+}
+
+func (c *Config) buildModelOptions() map[string]any {
+	if len(c.Provider.Options) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(c.Provider.Options))
+	for k, v := range c.Provider.Options {
+		out[k] = v
+	}
+	return out
 }
 
 func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, error) {

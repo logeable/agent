@@ -104,7 +104,7 @@ func (m *OpenAIResponseModel) Chat(
 		reqBody.Temperature = &temperature
 	}
 
-	payload, err := json.Marshal(reqBody)
+	payload, err := marshalOpenAIResponseRequest(reqBody, options)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -165,7 +165,7 @@ func (m *OpenAIResponseModel) ChatStream(
 		reqBody.Temperature = &temperature
 	}
 
-	payload, err := json.Marshal(reqBody)
+	payload, err := marshalOpenAIResponseRequest(reqBody, options)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -233,6 +233,42 @@ type openAIResponseRequest struct {
 	Temperature     *float64                  `json:"temperature,omitempty"`
 	Store           bool                      `json:"store"`
 	Stream          bool                      `json:"stream,omitempty"`
+}
+
+func marshalOpenAIResponseRequest(req openAIResponseRequest, options map[string]any) ([]byte, error) {
+	body := map[string]any{
+		"model": req.Model,
+		"store": req.Store,
+	}
+	if req.Instructions != "" {
+		body["instructions"] = req.Instructions
+	}
+	if len(req.Input) > 0 {
+		body["input"] = req.Input
+	}
+	if len(req.Tools) > 0 {
+		body["tools"] = req.Tools
+	}
+	if req.MaxOutputTokens != nil {
+		body["max_output_tokens"] = *req.MaxOutputTokens
+	}
+	if req.Temperature != nil {
+		body["temperature"] = *req.Temperature
+	}
+	if req.Stream {
+		body["stream"] = true
+	}
+	mergeExtraRequestOptions(body, options, map[string]struct{}{
+		"model":             {},
+		"instructions":      {},
+		"input":             {},
+		"tools":             {},
+		"max_output_tokens": {},
+		"temperature":       {},
+		"store":             {},
+		"stream":            {},
+	})
+	return json.Marshal(body)
 }
 
 type openAIResponseInputItem struct {
@@ -393,6 +429,7 @@ func parseOpenAIResponseStream(reader io.Reader, onChunk func(StreamChunk)) (*Re
 
 	var dataLines []string
 	var accumulated strings.Builder
+	var reasoning strings.Builder
 	type toolAssembly struct {
 		itemID    string
 		name      string
@@ -423,8 +460,20 @@ func parseOpenAIResponseStream(reader io.Reader, onChunk func(StreamChunk)) (*Re
 				accumulated.WriteString(evt.Delta)
 				if onChunk != nil {
 					onChunk(StreamChunk{
+						Kind:        StreamChunkKindOutputText,
 						Delta:       evt.Delta,
 						Accumulated: accumulated.String(),
+					})
+				}
+			}
+		case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
+			if evt.Delta != "" {
+				reasoning.WriteString(evt.Delta)
+				if onChunk != nil {
+					onChunk(StreamChunk{
+						Kind:        StreamChunkKindReasoning,
+						Delta:       evt.Delta,
+						Accumulated: reasoning.String(),
 					})
 				}
 			}

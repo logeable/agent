@@ -16,6 +16,7 @@ const (
 	EventTurnFinished      EventKind = "turn_finished"
 	EventModelRequest      EventKind = "model_request"
 	EventModelDelta        EventKind = "model_delta"
+	EventModelReasoning    EventKind = "model_reasoning"
 	EventModelResponse     EventKind = "model_response"
 	EventToolStarted       EventKind = "tool_started"
 	EventToolFinished      EventKind = "tool_finished"
@@ -99,6 +100,17 @@ type ModelRequestPayload struct {
 
 // ModelDeltaPayload describes one incremental streamed model chunk.
 type ModelDeltaPayload struct {
+	Delta       string
+	Accumulated string
+}
+
+// ModelReasoningPayload describes one incremental streamed reasoning chunk.
+//
+// Why:
+// Reasoning text is not the same as final assistant output. Keeping it in a
+// separate event lets hosts decide whether to hide it, stream it, summarize
+// it, or show it in a distinct UI treatment.
+type ModelReasoningPayload struct {
 	Delta       string
 	Accumulated string
 }

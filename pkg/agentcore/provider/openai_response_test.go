@@ -215,3 +215,81 @@ func TestOpenAIResponseModelStreamsToolCalls(t *testing.T) {
 		t.Fatalf("tool args text = %v, want hello", got)
 	}
 }
+
+func TestOpenAIResponseModelStreamsReasoning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"think \"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"more\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}]}}\n\n"))
+	}))
+	defer server.Close()
+
+	model, err := NewOpenAIResponseModel(OpenAIResponseConfig{
+		BaseURL: server.URL,
+		Model:   "demo-model",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIResponseModel() error = %v", err)
+	}
+
+	var gotKinds []StreamChunkKind
+	var gotDeltas []string
+	resp, err := model.ChatStream(
+		context.Background(),
+		[]Message{{Role: "user", Content: "hi"}},
+		nil,
+		"",
+		nil,
+		func(chunk StreamChunk) {
+			gotKinds = append(gotKinds, chunk.Kind)
+			gotDeltas = append(gotDeltas, chunk.Delta)
+		},
+	)
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("content = %q, want done", resp.Content)
+	}
+	if len(gotKinds) != 2 || gotKinds[0] != StreamChunkKindReasoning || gotKinds[1] != StreamChunkKindReasoning {
+		t.Fatalf("kinds = %#v, want reasoning chunks", gotKinds)
+	}
+	if len(gotDeltas) != 2 || gotDeltas[0] != "think " || gotDeltas[1] != "more" {
+		t.Fatalf("deltas = %#v, want [think  more]", gotDeltas)
+	}
+}
+
+func TestOpenAIResponseModelPassesCustomOptions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req["reasoning_effort"] != "medium" {
+			t.Fatalf("reasoning_effort = %v, want medium", req["reasoning_effort"])
+		}
+		if req["temperature"] != float64(0.1) {
+			t.Fatalf("temperature = %v, want 0.1", req["temperature"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":[]}`))
+	}))
+	defer server.Close()
+
+	model, err := NewOpenAIResponseModel(OpenAIResponseConfig{
+		BaseURL: server.URL,
+		Model:   "demo-model",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIResponseModel() error = %v", err)
+	}
+
+	_, err = model.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, "", map[string]any{
+		"reasoning_effort": "medium",
+		"temperature":      0.1,
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+}
