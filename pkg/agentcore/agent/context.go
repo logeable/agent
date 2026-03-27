@@ -43,9 +43,6 @@ func (b ContextBudget) targetTokens() int {
 		return 0
 	}
 	fraction := b.TargetFraction
-	if fraction <= 0 || fraction > 1 {
-		fraction = 1.0 / 3.0
-	}
 	target := int(math.Round(float64(b.MaxInputTokens) * fraction))
 	if target <= 0 || target > b.MaxInputTokens {
 		return b.MaxInputTokens

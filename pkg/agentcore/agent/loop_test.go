@@ -95,6 +95,35 @@ func (m *flakyModel) Chat(
 	return nil, fmt.Errorf("unexpected extra model call")
 }
 
+type overflowThenScriptedModel struct {
+	err      error
+	response []*provider.Response
+	calls    [][]provider.Message
+}
+
+func (m *overflowThenScriptedModel) Chat(
+	_ context.Context,
+	messages []provider.Message,
+	_ []provider.ToolDefinition,
+	_ string,
+	_ map[string]any,
+) (*provider.Response, error) {
+	snapshot := append([]provider.Message(nil), messages...)
+	m.calls = append(m.calls, snapshot)
+	callIdx := len(m.calls) - 1
+	if callIdx == 0 && m.err != nil {
+		return nil, m.err
+	}
+	respIdx := callIdx
+	if m.err != nil {
+		respIdx--
+	}
+	if respIdx >= 0 && respIdx < len(m.response) {
+		return m.response[respIdx], nil
+	}
+	return nil, fmt.Errorf("unexpected extra model call")
+}
+
 type streamingScriptedModel struct {
 	response provider.Response
 	chunks   []string
@@ -638,6 +667,51 @@ drain:
 	}
 	if !sawCompacted {
 		t.Fatal("expected context_compacted event during overflow retry")
+	}
+}
+
+func TestLoopPersistsCompactedActiveMessagesAfterOverflowRetry(t *testing.T) {
+	store := session.NewMemoryStore()
+	store.AddMessage("s1", "user", "older user message")
+	store.AddMessage("s1", "assistant", "older assistant message")
+
+	model := &overflowThenScriptedModel{
+		err: &provider.ModelError{Kind: provider.ModelErrorContextOverflow, Message: "context too long"},
+		response: []*provider.Response{
+			{
+				ToolCalls: []provider.ToolCall{
+					{ID: "call-1", Name: "echo", Arguments: map[string]any{"text": "one"}},
+				},
+			},
+			{Content: "done"},
+		},
+	}
+
+	registry := tooling.NewRegistry()
+	registry.Register(echoTool{})
+
+	loop := Loop{
+		Model:    model,
+		Tools:    registry,
+		Sessions: store,
+		Context:  ContextBuilder{SystemPrompt: "System prompt"},
+	}
+
+	got, err := loop.Process(context.Background(), "s1", "latest question")
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if got != "done" {
+		t.Fatalf("Process() = %q, want done", got)
+	}
+	if len(model.calls) != 3 {
+		t.Fatalf("model calls = %d, want 3", len(model.calls))
+	}
+	thirdCall := model.calls[2]
+	for _, msg := range thirdCall {
+		if msg.Content == "older user message" || msg.Content == "older assistant message" {
+			t.Fatalf("third call messages = %+v, want compacted active context without older messages", thirdCall)
+		}
 	}
 }
 

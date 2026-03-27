@@ -20,7 +20,7 @@ import (
 
 const (
 	defaultContextWindowTokens         = 100_000
-	defaultContextTargetFraction       = 1.0 / 3.0
+	defaultContextTargetFraction       = 0.5
 	defaultReadFileMaxBytes      int64 = 32 * 1024
 	defaultBashTimeoutMS         int64 = 60_000
 	defaultBashMaxOutputBytes          = 64 * 1024

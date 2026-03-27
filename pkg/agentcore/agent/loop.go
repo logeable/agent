@@ -196,7 +196,7 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 		// Each pass asks the model either for:
 		// - a final answer, or
 		// - one or more tool calls.
-		response, err := l.callModel(ctx, meta, requestMessages)
+		response, effectiveMessages, err := l.callModel(ctx, meta, requestMessages)
 		if err != nil {
 			finalStatus = TurnStatusError
 			l.emit(meta, EventError, ErrorPayload{
@@ -213,6 +213,7 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 			})
 			return "", fmt.Errorf("model returned nil response")
 		}
+		messages = effectiveMessages
 
 		l.emit(meta, EventModelResponse, ModelResponsePayload{
 			ContentLen: len(response.Content),
@@ -341,19 +342,19 @@ func (l *Loop) callModel(
 	ctx context.Context,
 	meta EventMeta,
 	messages []provider.Message,
-) (*provider.Response, error) {
+) (*provider.Response, []provider.Message, error) {
 	currentMessages := append([]provider.Message(nil), messages...)
 	contextOverflowAttempts := 0
 
 	for attempt := 0; attempt < defaultModelCallAttempts; attempt++ {
 		response, err := l.callModelOnce(ctx, meta, currentMessages)
 		if err == nil {
-			return response, nil
+			return response, currentMessages, nil
 		}
 
 		modelErr, ok := provider.AsModelError(err)
 		if !ok {
-			return nil, err
+			return nil, currentMessages, err
 		}
 
 		switch modelErr.Kind {
@@ -393,10 +394,10 @@ func (l *Loop) callModel(
 				}
 			}
 		}
-		return nil, err
+		return nil, currentMessages, err
 	}
 
-	return nil, fmt.Errorf("model call attempts exhausted")
+	return nil, currentMessages, fmt.Errorf("model call attempts exhausted")
 }
 
 func (l *Loop) callModelOnce(

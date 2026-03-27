@@ -393,7 +393,10 @@ func (m *model) handleRuntimeEvent(evt agent.Event) {
 		if m.showEvents {
 			m.appendBlock(roleSystem, "Runtime", formatRuntimeEventBlock(evt))
 		}
-	case agent.EventContextCompacted, agent.EventModelUsage, agent.EventModelRetry:
+	case agent.EventContextCompacted:
+		m.updateActivity(evt)
+		m.appendBlock(roleSystem, "Runtime", formatRuntimeEventBlock(evt))
+	case agent.EventModelUsage, agent.EventModelRetry:
 		m.updateActivity(evt)
 		if m.showEvents {
 			m.appendBlock(roleSystem, "Runtime", formatRuntimeEventBlock(evt))
@@ -709,9 +712,8 @@ func (m *model) updateActivity(evt agent.Event) {
 			}
 		}
 	case agent.EventContextCompacted:
-		payload, ok := evt.Payload.(agent.ContextCompactedPayload)
-		if ok {
-			m.activity = "Compacted context by " + strconv.Itoa(payload.DroppedMessages) + " msgs"
+		if _, ok := evt.Payload.(agent.ContextCompactedPayload); ok {
+			m.activity = "Context compacted"
 		}
 	case agent.EventModelUsage:
 		payload, ok := evt.Payload.(agent.ModelUsagePayload)
@@ -782,11 +784,17 @@ func formatRuntimeEventBlock(evt agent.Event) string {
 		if !ok {
 			return agentclirun.FormatEventLine(evt)
 		}
-		return "Context compacted" +
-			"\nStrategy: " + payload.Strategy +
-			"\nEstimated: " + strconv.Itoa(payload.EstimatedTokensBefore) + " -> " + strconv.Itoa(payload.EstimatedTokensAfter) +
-			"\nMessages: " + strconv.Itoa(payload.MessagesBefore) + " -> " + strconv.Itoa(payload.MessagesAfter) +
-			"\nDropped: " + strconv.Itoa(payload.DroppedMessages)
+		line := "Context compacted to fit the model window."
+		if payload.MessagesBefore > 0 || payload.MessagesAfter > 0 {
+			line += "\nMessages: " + strconv.Itoa(payload.MessagesBefore) + " -> " + strconv.Itoa(payload.MessagesAfter)
+		}
+		if payload.EstimatedTokensBefore > 0 || payload.EstimatedTokensAfter > 0 {
+			line += "\nEstimated input: " + strconv.Itoa(payload.EstimatedTokensBefore) + " -> " + strconv.Itoa(payload.EstimatedTokensAfter)
+		}
+		if payload.Strategy != "" {
+			line += "\nMode: " + payload.Strategy
+		}
+		return line
 	case agent.EventModelUsage:
 		payload, ok := evt.Payload.(agent.ModelUsagePayload)
 		if !ok {
