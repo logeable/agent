@@ -467,10 +467,10 @@ func parseOpenAICompatStream(reader io.Reader, onChunk func(StreamChunk)) (*Resp
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			return nil, fmt.Errorf("decode stream chunk: %w", err)
 		}
+		if chunk.Usage != nil {
+			usage = compatUsage(chunk.Usage)
+		}
 		if len(chunk.Choices) == 0 {
-			if chunk.Usage != nil {
-				usage = compatUsage(chunk.Usage)
-			}
 			continue
 		}
 

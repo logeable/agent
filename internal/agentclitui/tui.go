@@ -18,12 +18,12 @@ import (
 // Options controls the interactive TUI behavior without leaking TUI details
 // into cmd/agentcli.
 type Options struct {
-	SessionKey  string
-	ProfileName string
-	Stream      bool
+	SessionKey    string
+	ProfileName   string
+	Stream        bool
 	ShowReasoning bool
-	ShowEvents  bool
-	AutoApprove bool
+	ShowEvents    bool
+	AutoApprove   bool
 }
 
 type processDoneMsg struct {
@@ -57,10 +57,11 @@ type messageBlock struct {
 }
 
 type model struct {
-	loop       *agent.Loop
-	profileName string
-	sessionKey string
-	stream     bool
+	loop          *agent.Loop
+	profileName   string
+	sessionKey    string
+	stream        bool
+	showEvents    bool
 	showReasoning bool
 
 	input          textarea.Model
@@ -165,6 +166,7 @@ func newModel(loop *agent.Loop, opts Options) model {
 		profileName:        strings.TrimSpace(opts.ProfileName),
 		sessionKey:         opts.SessionKey,
 		stream:             opts.Stream,
+		showEvents:         opts.ShowEvents,
 		showReasoning:      opts.ShowReasoning,
 		input:              input,
 		messageView:        messageView,
@@ -378,6 +380,11 @@ func (m *model) handleRuntimeEvent(evt agent.Event) {
 			return
 		}
 		m.appendReasoningDelta(payload.Delta)
+	case agent.EventContextBudget, agent.EventContextCompacted, agent.EventModelUsage:
+		m.updateActivity(evt)
+		if m.showEvents {
+			m.appendBlock(roleSystem, "Runtime", formatRuntimeEventBlock(evt))
+		}
 	default:
 		m.updateActivity(evt)
 		m.updateToolBlock(evt)
@@ -669,6 +676,24 @@ func (m *model) updateActivity(evt agent.Event) {
 		if ok {
 			m.activity = "Thinking with " + payload.Model
 		}
+	case agent.EventContextBudget:
+		payload, ok := evt.Payload.(agent.ContextBudgetPayload)
+		if ok {
+			m.activity = "Context est " + strconv.Itoa(payload.EstimatedTokensBefore)
+			if payload.BudgetTokens > 0 {
+				m.activity += " / budget " + strconv.Itoa(payload.BudgetTokens)
+			}
+		}
+	case agent.EventContextCompacted:
+		payload, ok := evt.Payload.(agent.ContextCompactedPayload)
+		if ok {
+			m.activity = "Compacted context by " + strconv.Itoa(payload.DroppedMessages) + " msgs"
+		}
+	case agent.EventModelUsage:
+		payload, ok := evt.Payload.(agent.ModelUsagePayload)
+		if ok {
+			m.activity = "Usage in " + strconv.Itoa(payload.InputTokens) + " out " + strconv.Itoa(payload.OutputTokens)
+		}
 	case agent.EventToolStarted:
 		payload, ok := evt.Payload.(agent.ToolStartedPayload)
 		if ok {
@@ -704,6 +729,52 @@ func (m *model) updateActivity(evt agent.Event) {
 		}
 	case agent.EventTurnFinished:
 		m.activity = "Idle"
+	}
+}
+
+func formatRuntimeEventBlock(evt agent.Event) string {
+	switch evt.Kind {
+	case agent.EventContextBudget:
+		payload, ok := evt.Payload.(agent.ContextBudgetPayload)
+		if !ok {
+			return agentclirun.FormatEventLine(evt)
+		}
+		line := "Context budget"
+		line += "\nEstimated input: " + strconv.Itoa(payload.EstimatedTokensBefore)
+		if payload.BudgetTokens > 0 {
+			line += "\nBudget: " + strconv.Itoa(payload.BudgetTokens)
+		}
+		if payload.TargetTokens > 0 {
+			line += "\nTarget: " + strconv.Itoa(payload.TargetTokens)
+		}
+		if payload.TriggeredCompaction {
+			line += "\nCompaction: triggered"
+		} else {
+			line += "\nCompaction: not needed"
+		}
+		return line
+	case agent.EventContextCompacted:
+		payload, ok := evt.Payload.(agent.ContextCompactedPayload)
+		if !ok {
+			return agentclirun.FormatEventLine(evt)
+		}
+		return "Context compacted" +
+			"\nStrategy: " + payload.Strategy +
+			"\nEstimated: " + strconv.Itoa(payload.EstimatedTokensBefore) + " -> " + strconv.Itoa(payload.EstimatedTokensAfter) +
+			"\nMessages: " + strconv.Itoa(payload.MessagesBefore) + " -> " + strconv.Itoa(payload.MessagesAfter) +
+			"\nDropped: " + strconv.Itoa(payload.DroppedMessages)
+	case agent.EventModelUsage:
+		payload, ok := evt.Payload.(agent.ModelUsagePayload)
+		if !ok {
+			return agentclirun.FormatEventLine(evt)
+		}
+		line := "Model usage"
+		line += "\nProvider input: " + strconv.Itoa(payload.InputTokens)
+		line += "\nOutput: " + strconv.Itoa(payload.OutputTokens)
+		line += "\nTotal: " + strconv.Itoa(payload.TotalTokens)
+		return line
+	default:
+		return agentclirun.FormatEventLine(evt)
 	}
 }
 

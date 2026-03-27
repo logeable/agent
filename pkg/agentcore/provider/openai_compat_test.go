@@ -233,3 +233,39 @@ func TestOpenAICompatModelParsesUsage(t *testing.T) {
 		t.Fatalf("Usage = %+v, want input=11 output=7 total=18", resp.Usage)
 	}
 }
+
+func TestOpenAICompatModelStreamsUsageFromTerminalChunk(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning_content\":null},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3273,\"completion_tokens\":85,\"total_tokens\":3358}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	model, err := NewOpenAICompatModel(OpenAICompatConfig{
+		BaseURL: server.URL,
+		Model:   "demo-model",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatModel() error = %v", err)
+	}
+
+	resp, err := model.ChatStream(
+		context.Background(),
+		[]Message{{Role: "user", Content: "hi"}},
+		nil,
+		"",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if resp.Usage == nil {
+		t.Fatal("Usage = nil, want parsed usage from terminal chunk")
+	}
+	if resp.Usage.InputTokens != 3273 || resp.Usage.OutputTokens != 85 || resp.Usage.TotalTokens != 3358 {
+		t.Fatalf("Usage = %+v, want input=3273 output=85 total=3358", resp.Usage)
+	}
+}
