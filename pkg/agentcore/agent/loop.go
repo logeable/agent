@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/logeable/agent/pkg/agentcore/provider"
@@ -90,6 +91,8 @@ type Loop struct {
 	Events        *EventBus
 	Approval      ApprovalHandler
 	nextTurnID    atomic.Uint64
+	closeMu       sync.Mutex
+	closers       []func() error
 }
 
 // Process executes one user turn.
@@ -327,6 +330,39 @@ func (l *Loop) resolvedAgentID() string {
 		return l.AgentID
 	}
 	return "main"
+}
+
+// AddCloser registers a cleanup function to run when the host is done with the
+// loop.
+//
+// Why:
+// Most core execution turns are pure in-memory operations, but bridge layers
+// such as MCP may allocate external resources like child processes or network
+// sessions. The loop needs one narrow hook for releasing those resources
+// without hard-coding knowledge of higher-level integrations.
+func (l *Loop) AddCloser(fn func() error) {
+	if fn == nil {
+		return
+	}
+	l.closeMu.Lock()
+	l.closers = append(l.closers, fn)
+	l.closeMu.Unlock()
+}
+
+// Close runs all registered cleanup functions.
+func (l *Loop) Close() error {
+	l.closeMu.Lock()
+	closers := append([]func() error(nil), l.closers...)
+	l.closers = nil
+	l.closeMu.Unlock()
+
+	var firstErr error
+	for i := len(closers) - 1; i >= 0; i-- {
+		if err := closers[i](); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // EncodeToolArguments is a tiny debugging helper.

@@ -55,6 +55,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	defer loop.Close()
 	loop.Events = agent.NewEventBus()
 	defer loop.Events.Close()
 

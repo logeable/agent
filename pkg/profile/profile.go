@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/logeable/agent/pkg/agentcore/provider"
 	"github.com/logeable/agent/pkg/agentcore/session"
 	"github.com/logeable/agent/pkg/agentcore/tooling"
+	"github.com/logeable/agent/pkg/mcpbridge"
 	"github.com/logeable/agent/pkg/skills"
 	builtintools "github.com/logeable/agent/pkg/tools"
 	"github.com/pelletier/go-toml/v2"
@@ -127,12 +129,13 @@ Max tool-call iterations per turn: %d
 // The goal of the first version is to keep profile files narrow and stable.
 // They exist to declare instance parameters, not to become a full platform DSL.
 type Config struct {
-	Name     string         `toml:"name"`
-	Provider ProviderConfig `toml:"provider"`
-	Agent    AgentConfig    `toml:"agent"`
-	Files    FilesConfig    `toml:"files"`
-	Skills   SkillsConfig   `toml:"skills"`
-	Tools    ToolsConfig    `toml:"tools"`
+	Name     string           `toml:"name"`
+	Provider ProviderConfig   `toml:"provider"`
+	Agent    AgentConfig      `toml:"agent"`
+	Files    FilesConfig      `toml:"files"`
+	Skills   SkillsConfig     `toml:"skills"`
+	MCP      mcpbridge.Config `toml:"mcp"`
+	Tools    ToolsConfig      `toml:"tools"`
 
 	sourcePath string
 }
@@ -264,6 +267,14 @@ func (c *Config) Validate() error {
 	if c.Agent.MaxIterations < 0 {
 		return fmt.Errorf("agent.max_iterations must be zero or greater")
 	}
+	for name, server := range c.MCP.Servers {
+		if server.Enabled != nil && !*server.Enabled {
+			continue
+		}
+		if strings.TrimSpace(server.Command) == "" {
+			return fmt.Errorf("mcp server %q requires command", name)
+		}
+	}
 	return nil
 }
 
@@ -296,7 +307,7 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		return nil, err
 	}
 
-	registry, err := c.buildRegistry(workDir, pathPolicy)
+	registry, mcpManager, err := c.buildRegistry(workDir, pathPolicy)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +325,7 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		MaxIterations: c.Agent.MaxIterations,
 	}, skillsSummary)
 
-	return &agent.Loop{
+	loop := &agent.Loop{
 		Model:         model,
 		ModelName:     modelName,
 		AgentID:       strings.TrimSpace(c.Agent.ID),
@@ -324,7 +335,11 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		Context: agent.ContextBuilder{
 			SystemPrompt: systemPrompt,
 		},
-	}, nil
+	}
+	if mcpManager != nil {
+		loop.AddCloser(mcpManager.Close)
+	}
+	return loop, nil
 }
 
 func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, error) {
@@ -370,7 +385,10 @@ func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, erro
 	}
 }
 
-func (c *Config) buildRegistry(workDir string, pathPolicy builtintools.PathPolicy) (*tooling.Registry, error) {
+func (c *Config) buildRegistry(
+	workDir string,
+	pathPolicy builtintools.PathPolicy,
+) (*tooling.Registry, *mcpbridge.Manager, error) {
 	registry := tooling.NewRegistry()
 
 	for _, name := range c.enabledTools() {
@@ -403,11 +421,41 @@ func (c *Config) buildRegistry(workDir string, pathPolicy builtintools.PathPolic
 				UserAgent: strings.TrimSpace(c.Tools.WebFetch.UserAgent),
 			})
 		default:
-			return nil, fmt.Errorf("unsupported tool %q", name)
+			return nil, nil, fmt.Errorf("unsupported tool %q", name)
 		}
 	}
 
-	return registry, nil
+	manager, err := c.buildMCPRegistry(context.Background(), workDir, registry)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return registry, manager, nil
+}
+
+func (c *Config) buildMCPRegistry(
+	ctx context.Context,
+	workDir string,
+	registry *tooling.Registry,
+) (*mcpbridge.Manager, error) {
+	if registry == nil {
+		return nil, nil
+	}
+	if c.MCP.Enabled != nil && !*c.MCP.Enabled {
+		return nil, nil
+	}
+	if len(c.MCP.Servers) == 0 {
+		return nil, nil
+	}
+
+	manager := mcpbridge.NewManager()
+	if err := manager.LoadStdioServers(ctx, c.MCP, workDir); err != nil {
+		return nil, err
+	}
+	for _, tool := range manager.Tools() {
+		registry.Register(tool)
+	}
+	return manager, nil
 }
 
 func (c *Config) buildPathPolicy(workDir string) (builtintools.PathPolicy, error) {
