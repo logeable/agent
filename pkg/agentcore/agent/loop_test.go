@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/logeable/agent/pkg/agentcore/compaction"
 	"github.com/logeable/agent/pkg/agentcore/provider"
 	"github.com/logeable/agent/pkg/agentcore/session"
 	"github.com/logeable/agent/pkg/agentcore/tooling"
@@ -189,16 +190,16 @@ type nthCompactCompactor struct {
 	calls         int
 }
 
-func (c *nthCompactCompactor) Compact(input ContextCompactInput) ContextCompactResult {
+func (c *nthCompactCompactor) Compact(input compaction.ContextCompactInput) compaction.ContextCompactResult {
 	c.calls++
 	if c.calls != c.compactOnCall || len(input.Messages) < 2 {
-		return ContextCompactResult{
+		return compaction.ContextCompactResult{
 			Messages: input.Messages,
 			Strategy: "keep_all",
 		}
 	}
 	compacted := []provider.Message{input.Messages[0], input.Messages[len(input.Messages)-1]}
-	return ContextCompactResult{
+	return compaction.ContextCompactResult{
 		Messages:        compacted,
 		Strategy:        "nth_trim",
 		DroppedMessages: len(input.Messages) - len(compacted),
@@ -426,7 +427,7 @@ func TestLoopContextBudgetDoesNotOverwriteAccumulatedMessages(t *testing.T) {
 }
 
 func TestRecentMessageCompactorKeepsToolTransactionsAtomic(t *testing.T) {
-	compactor := RecentMessageCompactor{}
+	compactor := compaction.RecentMessageCompactor{}
 	messages := []provider.Message{
 		{Role: "system", Content: "system"},
 		{Role: "user", Content: "older user"},
@@ -443,7 +444,7 @@ func TestRecentMessageCompactorKeepsToolTransactionsAtomic(t *testing.T) {
 		{Role: "user", Content: "latest user"},
 	}
 
-	result := compactor.Compact(ContextCompactInput{
+	result := compactor.Compact(compaction.ContextCompactInput{
 		Messages:     messages,
 		TargetTokens: 40,
 	})
@@ -464,7 +465,7 @@ func TestRecentMessageCompactorKeepsToolTransactionsAtomic(t *testing.T) {
 }
 
 func TestRecentMessageCompactorDropsWholeToolTransactionWhenNeeded(t *testing.T) {
-	compactor := RecentMessageCompactor{}
+	compactor := compaction.RecentMessageCompactor{}
 	messages := []provider.Message{
 		{Role: "system", Content: "system"},
 		{Role: "user", Content: "older user"},
@@ -481,7 +482,7 @@ func TestRecentMessageCompactorDropsWholeToolTransactionWhenNeeded(t *testing.T)
 		{Role: "user", Content: "latest user"},
 	}
 
-	result := compactor.Compact(ContextCompactInput{
+	result := compactor.Compact(compaction.ContextCompactInput{
 		Messages:     messages,
 		TargetTokens: 10,
 	})
@@ -495,7 +496,7 @@ func TestRecentMessageCompactorDropsWholeToolTransactionWhenNeeded(t *testing.T)
 }
 
 func TestRecentMessageCompactorProducesValidResponsesToolHistory(t *testing.T) {
-	compactor := RecentMessageCompactor{}
+	compactor := compaction.RecentMessageCompactor{}
 	messages := []provider.Message{
 		{Role: "system", Content: "system"},
 		{Role: "user", Content: "older user"},
@@ -512,7 +513,7 @@ func TestRecentMessageCompactorProducesValidResponsesToolHistory(t *testing.T) {
 		{Role: "user", Content: "latest user"},
 	}
 
-	compacted := compactor.Compact(ContextCompactInput{
+	compacted := compactor.Compact(compaction.ContextCompactInput{
 		Messages:     messages,
 		TargetTokens: 40,
 	}).Messages

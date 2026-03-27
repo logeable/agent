@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"github.com/logeable/agent/pkg/agentcore/compaction"
 	"github.com/logeable/agent/pkg/agentcore/provider"
 )
 
@@ -37,7 +38,7 @@ func (l *Loop) applyContextBudget(messages []provider.Message) ([]provider.Messa
 		return messages, report
 	}
 
-	result := l.ContextBudget.compactor().Compact(ContextCompactInput{
+	result := l.ContextBudget.compactor().Compact(compaction.ContextCompactInput{
 		Messages:        messages,
 		EstimatedTokens: before,
 		BudgetTokens:    l.ContextBudget.MaxInputTokens,

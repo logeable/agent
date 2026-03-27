@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/logeable/agent/pkg/agentcore/compaction"
 	"github.com/logeable/agent/pkg/agentcore/provider"
 	"github.com/logeable/agent/pkg/agentcore/session"
 	"github.com/logeable/agent/pkg/agentcore/tooling"
@@ -451,7 +452,7 @@ func (l *Loop) compactMessagesForOverflow(messages []provider.Message) ([]provid
 	report.BudgetTokens = estimated
 	report.TargetTokens = target
 
-	compacted := l.ContextBudget.compactor().Compact(ContextCompactInput{
+	compacted := l.ContextBudget.compactor().Compact(compaction.ContextCompactInput{
 		Messages:        messages,
 		EstimatedTokens: estimated,
 		BudgetTokens:    estimated,

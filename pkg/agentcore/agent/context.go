@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/logeable/agent/pkg/agentcore/compaction"
 	"github.com/logeable/agent/pkg/agentcore/provider"
 )
 
@@ -29,8 +30,8 @@ type ContextBuilder struct {
 type ContextBudget struct {
 	MaxInputTokens int
 	TargetFraction float64
-	Estimator      MessageEstimator
-	Compactor      ContextCompactor
+	Estimator      compaction.MessageEstimator
+	Compactor      compaction.ContextCompactor
 }
 
 // Enabled reports whether the runtime should enforce an active-context budget.
@@ -50,191 +51,18 @@ func (b ContextBudget) targetTokens() int {
 	return target
 }
 
-func (b ContextBudget) estimator() MessageEstimator {
+func (b ContextBudget) estimator() compaction.MessageEstimator {
 	if b.Estimator != nil {
 		return b.Estimator
 	}
-	return ApproximateTokenEstimator{}
+	return compaction.ApproximateTokenEstimator{}
 }
 
-func (b ContextBudget) compactor() ContextCompactor {
+func (b ContextBudget) compactor() compaction.ContextCompactor {
 	if b.Compactor != nil {
 		return b.Compactor
 	}
-	return RecentMessageCompactor{}
-}
-
-// MessageEstimator estimates the token cost of an active context.
-type MessageEstimator interface {
-	EstimateMessages(messages []provider.Message) int
-}
-
-// ApproximateTokenEstimator is a deliberately simple default estimator.
-//
-// Why:
-// The core needs a stable, provider-agnostic signal for budget checks before
-// adding model-specific tokenizers or billing integrations.
-type ApproximateTokenEstimator struct{}
-
-func (ApproximateTokenEstimator) EstimateMessages(messages []provider.Message) int {
-	total := 0
-	for _, msg := range messages {
-		total += estimateMessageTokens(msg)
-	}
-	return total
-}
-
-func estimateMessageTokens(msg provider.Message) int {
-	total := 6
-	total += roughTokenCount(msg.Role)
-	total += roughTokenCount(msg.Content)
-	total += roughTokenCount(msg.ToolCallID)
-	for _, call := range msg.ToolCalls {
-		total += 8
-		total += roughTokenCount(call.ID)
-		total += roughTokenCount(call.Name)
-		for key, value := range call.Arguments {
-			total += roughTokenCount(key)
-			total += roughTokenCount(fmt.Sprintf("%v", value))
-		}
-	}
-	return total
-}
-
-func roughTokenCount(value string) int {
-	if value == "" {
-		return 0
-	}
-	// This intentionally overestimates a little. The runtime only needs a
-	// stable budget signal, not exact provider billing math.
-	return int(math.Ceil(float64(len(value)) / 4.0))
-}
-
-// ContextCompactor reduces an oversized active context without mutating the
-// stored session transcript.
-type ContextCompactor interface {
-	Compact(input ContextCompactInput) ContextCompactResult
-}
-
-// ContextCompactInput is the data passed into a compaction strategy.
-type ContextCompactInput struct {
-	Messages        []provider.Message
-	EstimatedTokens int
-	BudgetTokens    int
-	TargetTokens    int
-}
-
-// ContextCompactResult is the output of a compaction strategy.
-type ContextCompactResult struct {
-	Messages        []provider.Message
-	Strategy        string
-	DroppedMessages int
-}
-
-type compactMessageBlock struct {
-	messages []provider.Message
-}
-
-// RecentMessageCompactor keeps the system prompt and the newest messages.
-//
-// Why:
-// This is a safe first-pass strategy for active context compaction because it
-// does not rewrite session state and is easy to reason about.
-type RecentMessageCompactor struct{}
-
-func (RecentMessageCompactor) Compact(input ContextCompactInput) ContextCompactResult {
-	if len(input.Messages) == 0 {
-		return ContextCompactResult{Messages: nil, Strategy: "recent_trim"}
-	}
-
-	result := make([]provider.Message, 0, len(input.Messages))
-	start := 0
-	if input.Messages[0].Role == "system" {
-		result = append(result, input.Messages[0])
-		start = 1
-	}
-
-	estimator := ApproximateTokenEstimator{}
-	currentTokens := estimator.EstimateMessages(result)
-	blocks := buildCompactBlocks(input.Messages[start:])
-	if len(blocks) == 0 {
-		return ContextCompactResult{
-			Messages:        result,
-			Strategy:        "recent_trim",
-			DroppedMessages: len(input.Messages) - len(result),
-		}
-	}
-
-	tail := append([]provider.Message(nil), blocks[len(blocks)-1].messages...)
-	currentTokens += estimator.EstimateMessages(tail)
-
-	selected := make([]compactMessageBlock, 0, len(blocks))
-	for i := len(blocks) - 2; i >= 0; i-- {
-		candidate := blocks[i].messages
-		candidateTokens := estimator.EstimateMessages(candidate)
-		if len(result) > 0 && currentTokens+candidateTokens > input.TargetTokens {
-			continue
-		}
-		selected = append([]compactMessageBlock{{messages: candidate}}, selected...)
-		currentTokens += candidateTokens
-	}
-
-	for _, block := range selected {
-		result = append(result, block.messages...)
-	}
-	result = append(result, tail...)
-
-	if len(result) == 0 {
-		result = append(result, input.Messages[len(input.Messages)-1])
-	}
-
-	return ContextCompactResult{
-		Messages:        result,
-		Strategy:        "recent_trim",
-		DroppedMessages: len(input.Messages) - len(result),
-	}
-}
-
-func buildCompactBlocks(messages []provider.Message) []compactMessageBlock {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	blocks := make([]compactMessageBlock, 0, len(messages))
-	for i := 0; i < len(messages); {
-		msg := messages[i]
-		if len(msg.ToolCalls) == 0 {
-			blocks = append(blocks, compactMessageBlock{
-				messages: []provider.Message{msg},
-			})
-			i++
-			continue
-		}
-
-		callIDs := make(map[string]struct{}, len(msg.ToolCalls))
-		for _, call := range msg.ToolCalls {
-			if call.ID != "" {
-				callIDs[call.ID] = struct{}{}
-			}
-		}
-
-		block := []provider.Message{msg}
-		j := i + 1
-		for ; j < len(messages); j++ {
-			next := messages[j]
-			if next.Role != "tool" {
-				break
-			}
-			if _, ok := callIDs[next.ToolCallID]; !ok {
-				break
-			}
-			block = append(block, next)
-		}
-		blocks = append(blocks, compactMessageBlock{messages: block})
-		i = j
-	}
-
-	return blocks
+	return compaction.RecentMessageCompactor{}
 }
 
 // BuildMessages assembles the messages for one model call.
