@@ -1,6 +1,8 @@
 package agent
 
-import "github.com/logeable/agent/pkg/agentcore/provider"
+import (
+	"github.com/logeable/agent/pkg/agentcore/provider"
+)
 
 // ContextBudgetReport is the telemetry snapshot for one active-context check.
 type ContextBudgetReport struct {
