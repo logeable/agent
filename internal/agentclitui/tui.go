@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -58,7 +58,7 @@ type model struct {
 	sessionKey string
 	stream     bool
 
-	input          textinput.Model
+	input          textarea.Model
 	messageView    viewport.Model
 	width          int
 	height         int
@@ -128,11 +128,26 @@ func Run(loop *agent.Loop, opts Options) error {
 }
 
 func newModel(loop *agent.Loop, opts Options) model {
-	input := textinput.New()
-	input.Placeholder = "Send a message"
+	input := textarea.New()
+	input.Placeholder = ""
 	input.Focus()
 	input.CharLimit = 0
-	input.Prompt = "> "
+	input.Prompt = ""
+	input.ShowLineNumbers = false
+	input.SetHeight(3)
+	bg := lipgloss.Color("236")
+	fg := lipgloss.Color("252")
+	placeholder := lipgloss.Color("245")
+	input.FocusedStyle.Base = input.FocusedStyle.Base.Background(bg).Foreground(fg)
+	input.FocusedStyle.Text = input.FocusedStyle.Text.Background(bg).Foreground(fg)
+	input.FocusedStyle.Placeholder = input.FocusedStyle.Placeholder.Background(bg).Foreground(placeholder)
+	input.FocusedStyle.CursorLine = input.FocusedStyle.CursorLine.Background(bg)
+	input.FocusedStyle.EndOfBuffer = input.FocusedStyle.EndOfBuffer.Background(bg).Foreground(bg)
+	input.BlurredStyle.Base = input.BlurredStyle.Base.Background(bg).Foreground(fg)
+	input.BlurredStyle.Text = input.BlurredStyle.Text.Background(bg).Foreground(fg)
+	input.BlurredStyle.Placeholder = input.BlurredStyle.Placeholder.Background(bg).Foreground(placeholder)
+	input.BlurredStyle.CursorLine = input.BlurredStyle.CursorLine.Background(bg)
+	input.BlurredStyle.EndOfBuffer = input.BlurredStyle.EndOfBuffer.Background(bg).Foreground(bg)
 
 	messageView := viewport.New(0, 0)
 
@@ -150,13 +165,11 @@ func newModel(loop *agent.Loop, opts Options) model {
 		activeAssistantIdx: -1,
 		activeToolIdx:      -1,
 	}
-	m.appendBlock(roleSystem, "System", "agentcli")
-	m.appendBlock(roleSystem, "Tips", "Enter to send, Ctrl+C to quit.")
 	return m
 }
 
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return textarea.Blink
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -164,7 +177,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.input.Width = maxInt(10, msg.Width-4)
+		m.input.SetWidth(maxInt(10, msg.Width-4))
 		m.refreshLayout()
 		return m, nil
 	case runtimeEventMsg:
@@ -232,6 +245,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
+		case tea.KeyCtrlJ:
+			m.input.InsertString("\n")
+			m.refreshLayout()
+			return m, nil
 		case tea.KeyEnter:
 			if m.busy {
 				return m, nil
@@ -254,6 +271,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.refreshLayout()
 	return m, cmd
 }
 
@@ -282,12 +300,10 @@ func (m model) View() string {
 		return "\nLoading..."
 	}
 
-	body := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("62")).
-		Padding(0, 1).
-		Width(maxInt(20, m.messageView.Width+2)).
-		Height(m.messageView.Height + 2).
+	bodyStyle := lipgloss.NewStyle()
+	body := bodyStyle.
+		Width(maxInt(20, m.width-bodyStyle.GetHorizontalFrameSize())).
+		Height(maxInt(1, m.messageView.Height)).
 		Render(m.messageView.View())
 
 	sections := []string{
@@ -445,10 +461,12 @@ func (m model) headerView() string {
 }
 
 func (m model) inputView() string {
-	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("63")).
-		Padding(0, 1).
+	style := lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("252")).
+		Padding(1, 2)
+	return style.
+		Width(maxInt(20, m.width)).
 		Render(m.input.View())
 }
 
@@ -456,6 +474,9 @@ func (m *model) refreshLayout() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
+
+	inputStyle := lipgloss.NewStyle().Padding(1, 2)
+	m.footerHeight = inputStyle.GetVerticalFrameSize() + m.input.Height() + 1
 
 	m.approvalHeight = 0
 	if m.awaitingApproval {
@@ -467,26 +488,22 @@ func (m *model) refreshLayout() {
 		bodyHeight = 8
 	}
 
-	messageInnerWidth := maxInt(20, m.width-4)
-	m.messageView.Width = messageInnerWidth
-	m.messageView.Height = bodyHeight - 2
+	bodyStyle := lipgloss.NewStyle()
+	m.messageView.Width = maxInt(20, m.width-bodyStyle.GetHorizontalFrameSize())
+	m.messageView.Height = maxInt(1, bodyHeight-bodyStyle.GetVerticalFrameSize())
 	m.messageView.SetContent(m.renderTranscript())
 	m.messageView.GotoBottom()
 }
 
 func renderMessageBlock(block messageBlock, width int) string {
-	contentWidth := maxInt(16, width-6)
 	titleStyle := lipgloss.NewStyle().Bold(true)
-	bodyStyle := lipgloss.NewStyle().Width(contentWidth)
 	boxStyle := lipgloss.NewStyle().
-		Padding(0, 1).
-		Width(width)
+		Padding(0, 1)
 
 	switch block.role {
 	case roleUser:
 		titleStyle = titleStyle.Foreground(lipgloss.Color("81"))
 		boxStyle = boxStyle.
-			Align(lipgloss.Right).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("81"))
 	case roleAssistant:
@@ -509,11 +526,14 @@ func renderMessageBlock(block messageBlock, width int) string {
 			BorderForeground(lipgloss.Color("240"))
 	}
 
+	contentWidth := maxInt(16, width-boxStyle.GetHorizontalFrameSize())
+	bodyStyle := lipgloss.NewStyle().Width(contentWidth)
+
 	body := strings.TrimSpace(block.content)
 	if body == "" {
 		body = " "
 	}
-	return boxStyle.Render(
+	return boxStyle.Width(contentWidth).Render(
 		titleStyle.Render(block.title) + "\n" +
 			bodyStyle.Render(body),
 	)
