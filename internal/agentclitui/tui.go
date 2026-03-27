@@ -81,6 +81,8 @@ type model struct {
 	approvalReply    chan bool
 
 	messages           []messageBlock
+	currentTurnID      string
+	currentIteration   int
 	activeAssistantIdx int
 	activeReasoningIdx int
 	activeToolIdx      int
@@ -208,6 +210,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendBlock(roleError, "Error", msg.err.Error())
 			}
 			m.streamingSeen = false
+			m.currentTurnID = ""
+			m.currentIteration = 0
 			m.activeAssistantIdx = -1
 			m.activeReasoningIdx = -1
 			return m, nil
@@ -218,6 +222,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.normalizeActiveAssistant()
 		}
 		m.streamingSeen = false
+		m.currentTurnID = ""
+		m.currentIteration = 0
 		m.activeAssistantIdx = -1
 		m.activeReasoningIdx = -1
 		m.activeToolIdx = -1
@@ -276,6 +282,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetValue("")
 			m.busy = true
 			m.streamingSeen = false
+			m.currentTurnID = ""
+			m.currentIteration = 0
 			m.activeAssistantIdx = -1
 			m.activeReasoningIdx = -1
 			m.status = "Running"
@@ -343,10 +351,17 @@ func (m model) processMessageCmd(message string) tea.Cmd {
 
 func (m *model) handleRuntimeEvent(evt agent.Event) {
 	switch evt.Kind {
+	case agent.EventTurnStarted:
+		m.currentTurnID = evt.Meta.TurnID
+		m.currentIteration = 0
+		m.activeAssistantIdx = -1
+		m.activeReasoningIdx = -1
+		m.activeToolIdx = -1
 	case agent.EventModelDelta:
 		if !m.stream {
 			return
 		}
+		m.ensureStep(evt.Meta.TurnID, evt.Meta.Iteration)
 		payload, ok := evt.Payload.(agent.ModelDeltaPayload)
 		if !ok || payload.Delta == "" {
 			return
@@ -357,6 +372,7 @@ func (m *model) handleRuntimeEvent(evt agent.Event) {
 		if !m.showReasoning {
 			return
 		}
+		m.ensureStep(evt.Meta.TurnID, evt.Meta.Iteration)
 		payload, ok := evt.Payload.(agent.ModelReasoningPayload)
 		if !ok || payload.Delta == "" {
 			return
@@ -375,6 +391,20 @@ func (m *model) appendBlock(role messageRole, title, content string) {
 		content: content,
 	})
 	m.rebuildTranscript()
+}
+
+func (m *model) ensureStep(turnID string, iteration int) {
+	if iteration <= 0 {
+		return
+	}
+	if m.currentTurnID == turnID && m.currentIteration == iteration {
+		return
+	}
+	m.currentTurnID = turnID
+	m.currentIteration = iteration
+	m.activeAssistantIdx = -1
+	m.activeReasoningIdx = -1
+	m.activeToolIdx = -1
 }
 
 func (m *model) appendOrUpdateToolBlock(content string) {
@@ -678,6 +708,9 @@ func (m *model) updateActivity(evt agent.Event) {
 }
 
 func (m *model) updateToolBlock(evt agent.Event) {
+	if evt.Meta.Iteration > 0 {
+		m.ensureStep(evt.Meta.TurnID, evt.Meta.Iteration)
+	}
 	switch evt.Kind {
 	case agent.EventToolStarted:
 		payload, ok := evt.Payload.(agent.ToolStartedPayload)
