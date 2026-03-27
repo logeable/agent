@@ -293,3 +293,33 @@ func TestOpenAIResponseModelPassesCustomOptions(t *testing.T) {
 		t.Fatalf("Chat() error = %v", err)
 	}
 }
+
+func TestOpenAIResponseModelParsesUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+			"usage":{"input_tokens":13,"output_tokens":5,"total_tokens":18}
+		}`))
+	}))
+	defer server.Close()
+
+	model, err := NewOpenAIResponseModel(OpenAIResponseConfig{
+		BaseURL: server.URL,
+		Model:   "demo-model",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIResponseModel() error = %v", err)
+	}
+
+	resp, err := model.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, "", nil)
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if resp.Usage == nil {
+		t.Fatal("Usage = nil, want parsed usage")
+	}
+	if resp.Usage.InputTokens != 13 || resp.Usage.OutputTokens != 5 || resp.Usage.TotalTokens != 18 {
+		t.Fatalf("Usage = %+v, want input=13 output=5 total=18", resp.Usage)
+	}
+}

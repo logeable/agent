@@ -305,6 +305,7 @@ type openAIResponseEnvelope struct {
 			Text string `json:"text"`
 		} `json:"content"`
 	} `json:"output"`
+	Usage *openAIResponseUsage `json:"usage"`
 }
 
 type openAIResponseStreamEvent struct {
@@ -320,6 +321,12 @@ type openAIResponseStreamEvent struct {
 
 type openAIResponseError struct {
 	Message string `json:"message"`
+}
+
+type openAIResponseUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
 }
 
 func serializeResponsesInput(messages []Message) (string, []openAIResponseInputItem) {
@@ -393,7 +400,9 @@ func parseOpenAIResponse(resp *openAIResponseEnvelope) *Response {
 		return &Response{}
 	}
 
-	out := &Response{}
+	out := &Response{
+		Usage: responsesUsage(resp.Usage),
+	}
 	var content strings.Builder
 
 	for _, item := range resp.Output {
@@ -563,4 +572,15 @@ func parseOpenAIResponseStream(reader io.Reader, onChunk func(StreamChunk)) (*Re
 		})
 	}
 	return out, nil
+}
+
+func responsesUsage(value *openAIResponseUsage) *Usage {
+	if value == nil {
+		return nil
+	}
+	return &Usage{
+		InputTokens:  value.InputTokens,
+		OutputTokens: value.OutputTokens,
+		TotalTokens:  value.TotalTokens,
+	}
 }

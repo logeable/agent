@@ -210,6 +210,13 @@ func FormatEventLine(evt agent.Event) string {
 		}
 		return fmt.Sprintf("%s iteration=%d content_len=%d tool_calls=%d",
 			prefix, evt.Meta.Iteration, payload.ContentLen, payload.ToolCalls)
+	case agent.EventModelUsage:
+		payload, ok := evt.Payload.(agent.ModelUsagePayload)
+		if !ok {
+			return prefix
+		}
+		return fmt.Sprintf("%s iteration=%d input_tokens=%d output_tokens=%d total_tokens=%d",
+			prefix, evt.Meta.Iteration, payload.InputTokens, payload.OutputTokens, payload.TotalTokens)
 	case agent.EventToolStarted:
 		payload, ok := evt.Payload.(agent.ToolStartedPayload)
 		if !ok {

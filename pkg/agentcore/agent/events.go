@@ -17,6 +17,7 @@ const (
 	EventContextBudget     EventKind = "context_budget"
 	EventContextCompacted  EventKind = "context_compacted"
 	EventModelRequest      EventKind = "model_request"
+	EventModelUsage        EventKind = "model_usage"
 	EventModelDelta        EventKind = "model_delta"
 	EventModelReasoning    EventKind = "model_reasoning"
 	EventModelResponse     EventKind = "model_response"
@@ -142,6 +143,13 @@ type ModelReasoningPayload struct {
 type ModelResponsePayload struct {
 	ContentLen int
 	ToolCalls  int
+}
+
+// ModelUsagePayload describes provider-reported usage for one completed model call.
+type ModelUsagePayload struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
 }
 
 // ToolStartedPayload describes a tool invocation request.

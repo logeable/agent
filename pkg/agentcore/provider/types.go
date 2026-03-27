@@ -60,6 +60,14 @@ type ToolDefinition struct {
 type Response struct {
 	Content   string
 	ToolCalls []ToolCall
+	Usage     *Usage
+}
+
+// Usage describes provider-reported token usage for one completed model call.
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
 }
 
 type StreamChunkKind string

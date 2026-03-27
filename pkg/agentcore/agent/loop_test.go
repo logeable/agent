@@ -349,6 +349,61 @@ drain:
 	}
 }
 
+func TestLoopEmitsModelUsageEvents(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*provider.Response{{
+			Content: "hello",
+			Usage: &provider.Usage{
+				InputTokens:  21,
+				OutputTokens: 9,
+				TotalTokens:  30,
+			},
+		}},
+	}
+	store := session.NewMemoryStore()
+	bus := NewEventBus()
+	defer bus.Close()
+	sub := bus.Subscribe(16)
+	defer bus.Unsubscribe(sub.ID)
+
+	loop := Loop{
+		Model:    model,
+		Sessions: store,
+		Context:  ContextBuilder{SystemPrompt: "You are an agent."},
+		Events:   bus,
+	}
+
+	_, err := loop.Process(context.Background(), "s1", "hi")
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+
+	var sawUsage bool
+drain:
+	for {
+		select {
+		case evt := <-sub.C:
+			if evt.Kind != EventModelUsage {
+				continue
+			}
+			payload, ok := evt.Payload.(ModelUsagePayload)
+			if !ok {
+				t.Fatalf("payload type = %T, want ModelUsagePayload", evt.Payload)
+			}
+			if payload.InputTokens != 21 || payload.OutputTokens != 9 || payload.TotalTokens != 30 {
+				t.Fatalf("payload = %+v, want input=21 output=9 total=30", payload)
+			}
+			sawUsage = true
+		default:
+			break drain
+		}
+	}
+
+	if !sawUsage {
+		t.Fatal("expected model_usage event")
+	}
+}
+
 func TestLoopStopsWhenToolRequiresApproval(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*provider.Response{

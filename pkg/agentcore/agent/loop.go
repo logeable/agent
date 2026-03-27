@@ -212,6 +212,13 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 			ContentLen: len(response.Content),
 			ToolCalls:  len(response.ToolCalls),
 		})
+		if response.Usage != nil {
+			l.emit(meta, EventModelUsage, ModelUsagePayload{
+				InputTokens:  response.Usage.InputTokens,
+				OutputTokens: response.Usage.OutputTokens,
+				TotalTokens:  response.Usage.TotalTokens,
+			})
+		}
 
 		// No tool calls means the model considers the task finished.
 		if len(response.ToolCalls) == 0 {

@@ -157,6 +157,7 @@ func (m *OpenAICompatModel) Chat(
 	choice := decoded.Choices[0]
 	out := &Response{
 		Content: choice.Message.Content,
+		Usage:   compatUsage(decoded.Usage),
 	}
 	for _, tc := range choice.Message.ToolCalls {
 		arguments := map[string]any{}
@@ -325,6 +326,7 @@ type openAICompatResponse struct {
 			ToolCalls []openAICompatToolCallWire `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage *openAICompatUsage `json:"usage"`
 }
 
 type openAICompatStreamEnvelope struct {
@@ -344,6 +346,13 @@ type openAICompatStreamEnvelope struct {
 			} `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
+	Usage *openAICompatUsage `json:"usage"`
+}
+
+type openAICompatUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 func serializeMessages(messages []Message) []openAICompatMessage {
@@ -438,6 +447,7 @@ func parseOpenAICompatStream(reader io.Reader, onChunk func(StreamChunk)) (*Resp
 		arguments strings.Builder
 	}
 	toolCalls := make(map[int]*toolAssembly)
+	var usage *Usage
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -458,6 +468,9 @@ func parseOpenAICompatStream(reader io.Reader, onChunk func(StreamChunk)) (*Resp
 			return nil, fmt.Errorf("decode stream chunk: %w", err)
 		}
 		if len(chunk.Choices) == 0 {
+			if chunk.Usage != nil {
+				usage = compatUsage(chunk.Usage)
+			}
 			continue
 		}
 
@@ -509,7 +522,10 @@ func parseOpenAICompatStream(reader io.Reader, onChunk func(StreamChunk)) (*Resp
 		return nil, fmt.Errorf("read stream: %w", err)
 	}
 
-	out := &Response{Content: accumulated.String()}
+	out := &Response{
+		Content: accumulated.String(),
+		Usage:   usage,
+	}
 	for idx := 0; idx < len(toolCalls); idx++ {
 		item := toolCalls[idx]
 		if item == nil {
@@ -528,4 +544,15 @@ func parseOpenAICompatStream(reader io.Reader, onChunk func(StreamChunk)) (*Resp
 		})
 	}
 	return out, nil
+}
+
+func compatUsage(value *openAICompatUsage) *Usage {
+	if value == nil {
+		return nil
+	}
+	return &Usage{
+		InputTokens:  value.PromptTokens,
+		OutputTokens: value.CompletionTokens,
+		TotalTokens:  value.TotalTokens,
+	}
 }
