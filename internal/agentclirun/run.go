@@ -14,12 +14,12 @@ import (
 
 // SingleRunOptions controls the non-interactive one-shot execution path.
 type SingleRunOptions struct {
-	SessionKey  string
-	Message     string
-	Stream      bool
+	SessionKey    string
+	Message       string
+	Stream        bool
 	ShowReasoning bool
-	ShowEvents  bool
-	AutoApprove bool
+	ShowEvents    bool
+	AutoApprove   bool
 }
 
 // RunSingleMessage executes one user message and prints its output directly to
@@ -182,6 +182,20 @@ func FormatEventLine(evt agent.Event) string {
 			return prefix
 		}
 		return fmt.Sprintf("%s session=%s message=%q", prefix, evt.Meta.SessionKey, truncateForLog(payload.UserMessage, 80))
+	case agent.EventContextBudget:
+		payload, ok := evt.Payload.(agent.ContextBudgetPayload)
+		if !ok {
+			return prefix
+		}
+		return fmt.Sprintf("%s iteration=%d estimated=%d budget=%d target=%d compact=%t messages=%d",
+			prefix, evt.Meta.Iteration, payload.EstimatedTokensBefore, payload.BudgetTokens, payload.TargetTokens, payload.TriggeredCompaction, payload.MessagesBefore)
+	case agent.EventContextCompacted:
+		payload, ok := evt.Payload.(agent.ContextCompactedPayload)
+		if !ok {
+			return prefix
+		}
+		return fmt.Sprintf("%s iteration=%d strategy=%s estimated_before=%d estimated_after=%d budget=%d target=%d messages_before=%d messages_after=%d dropped=%d",
+			prefix, evt.Meta.Iteration, payload.Strategy, payload.EstimatedTokensBefore, payload.EstimatedTokensAfter, payload.BudgetTokens, payload.TargetTokens, payload.MessagesBefore, payload.MessagesAfter, payload.DroppedMessages)
 	case agent.EventModelRequest:
 		payload, ok := evt.Payload.(agent.ModelRequestPayload)
 		if !ok {

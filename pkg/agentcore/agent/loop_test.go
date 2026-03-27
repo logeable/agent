@@ -33,6 +33,23 @@ func (m *scriptedModel) Chat(
 	return resp, nil
 }
 
+type capturingModel struct {
+	response provider.Response
+	calls    [][]provider.Message
+}
+
+func (m *capturingModel) Chat(
+	_ context.Context,
+	messages []provider.Message,
+	_ []provider.ToolDefinition,
+	_ string,
+	_ map[string]any,
+) (*provider.Response, error) {
+	snapshot := append([]provider.Message(nil), messages...)
+	m.calls = append(m.calls, snapshot)
+	return &m.response, nil
+}
+
 type streamingScriptedModel struct {
 	response provider.Response
 	chunks   []string
@@ -554,5 +571,102 @@ func TestLoopCanContinueAfterReadFileEscapeApproval(t *testing.T) {
 	}
 	if got != "done" {
 		t.Fatalf("Process() = %q, want done", got)
+	}
+}
+
+func TestLoopCompactsActiveContextWithoutMutatingSession(t *testing.T) {
+	store := session.NewMemoryStore()
+	store.AddMessage("s1", "user", "older user message that is intentionally long to trigger compaction")
+	store.AddMessage("s1", "assistant", "older assistant message that is also intentionally long to trigger compaction")
+	store.AddMessage("s1", "user", "another older user message that should stay in session storage")
+
+	model := &capturingModel{
+		response: provider.Response{Content: "done"},
+	}
+	bus := NewEventBus()
+	defer bus.Close()
+	sub := bus.Subscribe(16)
+	defer bus.Unsubscribe(sub.ID)
+
+	loop := Loop{
+		Model:    model,
+		Sessions: store,
+		Context: ContextBuilder{
+			SystemPrompt: "System prompt that is long enough to consume budget on its own for this test.",
+		},
+		ContextBudget: ContextBudget{
+			MaxInputTokens: 32,
+			TargetFraction: 0.5,
+		},
+		Events: bus,
+	}
+
+	got, err := loop.Process(context.Background(), "s1", "latest question must remain visible")
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if got != "done" {
+		t.Fatalf("Process() = %q, want done", got)
+	}
+	if len(model.calls) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(model.calls))
+	}
+
+	lastCall := model.calls[0]
+	if len(lastCall) == 0 {
+		t.Fatal("model call messages are empty")
+	}
+	lastMessage := lastCall[len(lastCall)-1]
+	if lastMessage.Role != "user" || lastMessage.Content != "latest question must remain visible" {
+		t.Fatalf("last model message = %+v, want latest user message", lastMessage)
+	}
+
+	history := store.GetHistory("s1")
+	if len(history) != 5 {
+		t.Fatalf("session history length = %d, want 5", len(history))
+	}
+	if history[0].Content != "older user message that is intentionally long to trigger compaction" {
+		t.Fatalf("session history was rewritten: %+v", history)
+	}
+
+	var sawBudget bool
+	var sawCompacted bool
+drain:
+	for {
+		select {
+		case evt := <-sub.C:
+			switch evt.Kind {
+			case EventContextBudget:
+				payload, ok := evt.Payload.(ContextBudgetPayload)
+				if !ok {
+					t.Fatalf("payload type = %T, want ContextBudgetPayload", evt.Payload)
+				}
+				if !payload.TriggeredCompaction {
+					t.Fatalf("TriggeredCompaction = false, want true")
+				}
+				if payload.EstimatedTokensBefore <= payload.BudgetTokens {
+					t.Fatalf("estimated=%d budget=%d, want estimated > budget", payload.EstimatedTokensBefore, payload.BudgetTokens)
+				}
+				sawBudget = true
+			case EventContextCompacted:
+				payload, ok := evt.Payload.(ContextCompactedPayload)
+				if !ok {
+					t.Fatalf("payload type = %T, want ContextCompactedPayload", evt.Payload)
+				}
+				if payload.EstimatedTokensAfter >= payload.EstimatedTokensBefore {
+					t.Fatalf("estimated after = %d, want less than before %d", payload.EstimatedTokensAfter, payload.EstimatedTokensBefore)
+				}
+				if payload.MessagesAfter >= payload.MessagesBefore {
+					t.Fatalf("messages after = %d, want less than before %d", payload.MessagesAfter, payload.MessagesBefore)
+				}
+				sawCompacted = true
+			}
+		default:
+			break drain
+		}
+	}
+
+	if !sawBudget || !sawCompacted {
+		t.Fatalf("expected budget telemetry, got budget=%v compacted=%v", sawBudget, sawCompacted)
 	}
 }

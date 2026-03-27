@@ -14,6 +14,8 @@ type EventKind string
 const (
 	EventTurnStarted       EventKind = "turn_started"
 	EventTurnFinished      EventKind = "turn_finished"
+	EventContextBudget     EventKind = "context_budget"
+	EventContextCompacted  EventKind = "context_compacted"
 	EventModelRequest      EventKind = "model_request"
 	EventModelDelta        EventKind = "model_delta"
 	EventModelReasoning    EventKind = "model_reasoning"
@@ -88,6 +90,27 @@ type TurnStartedPayload struct {
 type TurnFinishedPayload struct {
 	Status       TurnStatus
 	FinalContent string
+}
+
+// ContextBudgetPayload describes one budget check against active context.
+type ContextBudgetPayload struct {
+	MessagesBefore        int
+	EstimatedTokensBefore int
+	BudgetTokens          int
+	TargetTokens          int
+	TriggeredCompaction   bool
+}
+
+// ContextCompactedPayload describes the result of one active-context compaction.
+type ContextCompactedPayload struct {
+	Strategy              string
+	MessagesBefore        int
+	MessagesAfter         int
+	EstimatedTokensBefore int
+	EstimatedTokensAfter  int
+	BudgetTokens          int
+	TargetTokens          int
+	DroppedMessages       int
 }
 
 // ModelRequestPayload describes an outbound model call.

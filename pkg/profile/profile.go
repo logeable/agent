@@ -142,20 +142,22 @@ type Config struct {
 
 // ProviderConfig declares how the agent talks to a model provider.
 type ProviderConfig struct {
-	Kind      string `toml:"kind"`
-	BaseURL   string `toml:"base_url"`
-	APIKey    string `toml:"api_key"`
-	APIKeyEnv string `toml:"api_key_env"`
-	Model     string `toml:"model"`
+	Kind      string         `toml:"kind"`
+	BaseURL   string         `toml:"base_url"`
+	APIKey    string         `toml:"api_key"`
+	APIKeyEnv string         `toml:"api_key_env"`
+	Model     string         `toml:"model"`
 	Options   map[string]any `toml:"options"`
 }
 
 // AgentConfig declares instance-level runtime parameters.
 type AgentConfig struct {
-	ID            string `toml:"id"`
-	Identity      string `toml:"identity"`
-	Soul          string `toml:"soul"`
-	MaxIterations int    `toml:"max_iterations"`
+	ID            string  `toml:"id"`
+	Identity      string  `toml:"identity"`
+	Soul          string  `toml:"soul"`
+	MaxIterations int     `toml:"max_iterations"`
+	ContextWindow int     `toml:"context_window"`
+	ContextRatio  float64 `toml:"context_ratio"`
 }
 
 // FilesConfig declares the shared file access policy for file tools.
@@ -334,6 +336,10 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		Sessions:      session.NewMemoryStore(),
 		MaxIterations: c.Agent.MaxIterations,
 		Options:       c.buildModelOptions(),
+		ContextBudget: agent.ContextBudget{
+			MaxInputTokens: positiveIntOrDefault(c.Agent.ContextWindow, 12000),
+			TargetFraction: positiveFloatOrDefault(c.Agent.ContextRatio, 1.0/3.0),
+		},
 		Context: agent.ContextBuilder{
 			SystemPrompt: systemPrompt,
 		},
@@ -353,6 +359,13 @@ func (c *Config) buildModelOptions() map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func positiveFloatOrDefault(value, fallback float64) float64 {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, error) {

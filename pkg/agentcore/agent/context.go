@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/logeable/agent/pkg/agentcore/provider"
 )
@@ -18,6 +19,174 @@ import (
 // grows into its own subsystem.
 type ContextBuilder struct {
 	SystemPrompt string
+}
+
+// ContextBudget controls how much active context is sent to the model.
+//
+// Why:
+// Session storage and model input are separate concerns. The budget applies to
+// the transient active context for one model call, not to the stored session.
+type ContextBudget struct {
+	MaxInputTokens int
+	TargetFraction float64
+	Estimator      MessageEstimator
+	Compactor      ContextCompactor
+}
+
+// Enabled reports whether the runtime should enforce an active-context budget.
+func (b ContextBudget) Enabled() bool {
+	return b.MaxInputTokens > 0
+}
+
+func (b ContextBudget) targetTokens() int {
+	if b.MaxInputTokens <= 0 {
+		return 0
+	}
+	fraction := b.TargetFraction
+	if fraction <= 0 || fraction > 1 {
+		fraction = 1.0 / 3.0
+	}
+	target := int(math.Round(float64(b.MaxInputTokens) * fraction))
+	if target <= 0 || target > b.MaxInputTokens {
+		return b.MaxInputTokens
+	}
+	return target
+}
+
+func (b ContextBudget) estimator() MessageEstimator {
+	if b.Estimator != nil {
+		return b.Estimator
+	}
+	return ApproximateTokenEstimator{}
+}
+
+func (b ContextBudget) compactor() ContextCompactor {
+	if b.Compactor != nil {
+		return b.Compactor
+	}
+	return RecentMessageCompactor{}
+}
+
+// MessageEstimator estimates the token cost of an active context.
+type MessageEstimator interface {
+	EstimateMessages(messages []provider.Message) int
+}
+
+// ApproximateTokenEstimator is a deliberately simple default estimator.
+//
+// Why:
+// The core needs a stable, provider-agnostic signal for budget checks before
+// adding model-specific tokenizers or billing integrations.
+type ApproximateTokenEstimator struct{}
+
+func (ApproximateTokenEstimator) EstimateMessages(messages []provider.Message) int {
+	total := 0
+	for _, msg := range messages {
+		total += estimateMessageTokens(msg)
+	}
+	return total
+}
+
+func estimateMessageTokens(msg provider.Message) int {
+	total := 6
+	total += roughTokenCount(msg.Role)
+	total += roughTokenCount(msg.Content)
+	total += roughTokenCount(msg.ToolCallID)
+	for _, call := range msg.ToolCalls {
+		total += 8
+		total += roughTokenCount(call.ID)
+		total += roughTokenCount(call.Name)
+		for key, value := range call.Arguments {
+			total += roughTokenCount(key)
+			total += roughTokenCount(fmt.Sprintf("%v", value))
+		}
+	}
+	return total
+}
+
+func roughTokenCount(value string) int {
+	if value == "" {
+		return 0
+	}
+	// This intentionally overestimates a little. The runtime only needs a
+	// stable budget signal, not exact provider billing math.
+	return int(math.Ceil(float64(len(value)) / 4.0))
+}
+
+// ContextCompactor reduces an oversized active context without mutating the
+// stored session transcript.
+type ContextCompactor interface {
+	Compact(input ContextCompactInput) ContextCompactResult
+}
+
+// ContextCompactInput is the data passed into a compaction strategy.
+type ContextCompactInput struct {
+	Messages        []provider.Message
+	EstimatedTokens int
+	BudgetTokens    int
+	TargetTokens    int
+}
+
+// ContextCompactResult is the output of a compaction strategy.
+type ContextCompactResult struct {
+	Messages        []provider.Message
+	Strategy        string
+	DroppedMessages int
+}
+
+// RecentMessageCompactor keeps the system prompt and the newest messages.
+//
+// Why:
+// This is a safe first-pass strategy for active context compaction because it
+// does not rewrite session state and is easy to reason about.
+type RecentMessageCompactor struct{}
+
+func (RecentMessageCompactor) Compact(input ContextCompactInput) ContextCompactResult {
+	if len(input.Messages) == 0 {
+		return ContextCompactResult{Messages: nil, Strategy: "recent_trim"}
+	}
+
+	result := make([]provider.Message, 0, len(input.Messages))
+	start := 0
+	var tail []provider.Message
+	if input.Messages[0].Role == "system" {
+		result = append(result, input.Messages[0])
+		start = 1
+	}
+
+	estimator := ApproximateTokenEstimator{}
+	currentTokens := estimator.EstimateMessages(result)
+	pinned := make(map[int]struct{})
+	if len(input.Messages) > start {
+		lastIdx := len(input.Messages) - 1
+		tail = append(tail, input.Messages[lastIdx])
+		currentTokens += estimator.EstimateMessages(tail)
+		pinned[lastIdx] = struct{}{}
+	}
+
+	for i := len(input.Messages) - 1; i >= start; i-- {
+		if _, ok := pinned[i]; ok {
+			continue
+		}
+		candidate := input.Messages[i]
+		candidateTokens := estimator.EstimateMessages([]provider.Message{candidate})
+		if len(result) > 0 && currentTokens+candidateTokens > input.TargetTokens {
+			continue
+		}
+		result = append([]provider.Message{candidate}, result...)
+		currentTokens += candidateTokens
+	}
+	result = append(result, tail...)
+
+	if len(result) == 0 {
+		result = append(result, input.Messages[len(input.Messages)-1])
+	}
+
+	return ContextCompactResult{
+		Messages:        result,
+		Strategy:        "recent_trim",
+		DroppedMessages: len(input.Messages) - len(result),
+	}
 }
 
 // BuildMessages assembles the messages for one model call.

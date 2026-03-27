@@ -86,6 +86,7 @@ type Loop struct {
 	Tools         *tooling.Registry
 	Sessions      session.Store
 	Context       ContextBuilder
+	ContextBudget ContextBudget
 	MaxIterations int
 	Options       map[string]any
 	Events        *EventBus
@@ -158,6 +159,26 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		meta := turnMeta.withIteration(iteration + 1)
+		messages, budgetReport := l.applyContextBudget(messages)
+		l.emit(meta, EventContextBudget, ContextBudgetPayload{
+			MessagesBefore:        budgetReport.MessagesBefore,
+			EstimatedTokensBefore: budgetReport.EstimatedTokensBefore,
+			BudgetTokens:          budgetReport.BudgetTokens,
+			TargetTokens:          budgetReport.TargetTokens,
+			TriggeredCompaction:   budgetReport.TriggeredCompaction,
+		})
+		if budgetReport.TriggeredCompaction {
+			l.emit(meta, EventContextCompacted, ContextCompactedPayload{
+				Strategy:              budgetReport.CompactionStrategy,
+				MessagesBefore:        budgetReport.MessagesBefore,
+				MessagesAfter:         budgetReport.MessagesAfter,
+				EstimatedTokensBefore: budgetReport.EstimatedTokensBefore,
+				EstimatedTokensAfter:  budgetReport.EstimatedTokensAfter,
+				BudgetTokens:          budgetReport.BudgetTokens,
+				TargetTokens:          budgetReport.TargetTokens,
+				DroppedMessages:       budgetReport.DroppedMessages,
+			})
+		}
 		_, streaming := l.Model.(provider.StreamingChatModel)
 		l.emit(meta, EventModelRequest, ModelRequestPayload{
 			Model:         l.ModelName,
