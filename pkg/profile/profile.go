@@ -18,6 +18,17 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+const (
+	defaultContextWindowTokens         = 12_000
+	defaultContextTargetFraction       = 1.0 / 3.0
+	defaultReadFileMaxBytes      int64 = 32 * 1024
+	defaultBashTimeoutMS         int64 = 60_000
+	defaultBashMaxOutputBytes          = 64 * 1024
+	defaultWebFetchTimeoutMS     int64 = 20_000
+	defaultWebFetchMaxBytes      int64 = 128 * 1024
+	defaultMCPResponseChars            = 8 * 1024
+)
+
 // BuildDefaultIdentity returns the default identity block for an agent profile.
 //
 // Why:
@@ -337,8 +348,8 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		MaxIterations: c.Agent.MaxIterations,
 		Options:       c.buildModelOptions(),
 		ContextBudget: agent.ContextBudget{
-			MaxInputTokens: positiveIntOrDefault(c.Agent.ContextWindow, 12000),
-			TargetFraction: positiveFloatOrDefault(c.Agent.ContextRatio, 1.0/3.0),
+			MaxInputTokens: positiveIntOrDefault(c.Agent.ContextWindow, defaultContextWindowTokens),
+			TargetFraction: positiveFloatOrDefault(c.Agent.ContextRatio, defaultContextTargetFraction),
 		},
 		Context: agent.ContextBuilder{
 			SystemPrompt: systemPrompt,
@@ -422,7 +433,7 @@ func (c *Config) buildRegistry(
 		case "read_file":
 			registry.Register(builtintools.ReadFileTool{
 				PathPolicy: pathPolicy,
-				MaxBytes:   positiveInt64OrDefault(c.Tools.ReadFile.MaxBytes, 32*1024),
+				MaxBytes:   positiveInt64OrDefault(c.Tools.ReadFile.MaxBytes, defaultReadFileMaxBytes),
 			})
 		case "write_file":
 			registry.Register(builtintools.WriteFileTool{
@@ -435,15 +446,15 @@ func (c *Config) buildRegistry(
 		case "bash":
 			registry.Register(builtintools.BashTool{
 				WorkDir:         workDir,
-				Timeout:         time.Duration(positiveInt64OrDefault(c.Tools.Bash.TimeoutMS, 60_000)) * time.Millisecond,
-				MaxOutputBytes:  positiveIntOrDefault(c.Tools.Bash.MaxOutputBytes, 64*1024),
+				Timeout:         time.Duration(positiveInt64OrDefault(c.Tools.Bash.TimeoutMS, defaultBashTimeoutMS)) * time.Millisecond,
+				MaxOutputBytes:  positiveIntOrDefault(c.Tools.Bash.MaxOutputBytes, defaultBashMaxOutputBytes),
 				Shell:           strings.TrimSpace(c.Tools.Bash.Shell),
 				RequireApproval: c.Tools.Bash.RequireApproval,
 			})
 		case "web_fetch":
 			registry.Register(builtintools.WebFetchTool{
-				Timeout:   time.Duration(positiveInt64OrDefault(c.Tools.WebFetch.TimeoutMS, 20_000)) * time.Millisecond,
-				MaxBytes:  positiveInt64OrDefault(c.Tools.WebFetch.MaxBytes, 128*1024),
+				Timeout:   time.Duration(positiveInt64OrDefault(c.Tools.WebFetch.TimeoutMS, defaultWebFetchTimeoutMS)) * time.Millisecond,
+				MaxBytes:  positiveInt64OrDefault(c.Tools.WebFetch.MaxBytes, defaultWebFetchMaxBytes),
 				UserAgent: strings.TrimSpace(c.Tools.WebFetch.UserAgent),
 			})
 		default:
@@ -474,7 +485,7 @@ func (c *Config) buildMCPRegistry(
 		return nil, nil
 	}
 
-	manager := mcpbridge.NewManager(positiveIntOrDefault(c.MCP.MaxToolResponseChars, 8*1024))
+	manager := mcpbridge.NewManager(positiveIntOrDefault(c.MCP.MaxToolResponseChars, defaultMCPResponseChars))
 	if err := manager.LoadStdioServers(ctx, c.MCP, workDir); err != nil {
 		return nil, err
 	}
