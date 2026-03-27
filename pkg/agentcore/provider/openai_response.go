@@ -381,6 +381,24 @@ func serializeResponsesInput(messages []Message) (string, []openAIResponseInputI
 	return instructions, items
 }
 
+// SerializeResponsesInputForTest exposes the Responses input mapping for tests.
+func SerializeResponsesInputForTest(messages []Message) (string, []map[string]any) {
+	instructions, items := serializeResponsesInput(messages)
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		data, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			continue
+		}
+		out = append(out, decoded)
+	}
+	return instructions, out
+}
+
 func serializeResponsesToolDefinitions(defs []ToolDefinition) []openAIResponseTool {
 	out := make([]openAIResponseTool, 0, len(defs))
 	for _, def := range defs {

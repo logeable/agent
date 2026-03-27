@@ -396,6 +396,120 @@ func TestLoopContextBudgetDoesNotOverwriteAccumulatedMessages(t *testing.T) {
 	}
 }
 
+func TestRecentMessageCompactorKeepsToolTransactionsAtomic(t *testing.T) {
+	compactor := RecentMessageCompactor{}
+	messages := []provider.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "older user"},
+		{
+			Role:    "assistant",
+			Content: "calling tool",
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call-1",
+				Name:      "echo",
+				Arguments: map[string]any{"text": "hello"},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call-1", Content: "echo:hello"},
+		{Role: "user", Content: "latest user"},
+	}
+
+	result := compactor.Compact(ContextCompactInput{
+		Messages:     messages,
+		TargetTokens: 40,
+	})
+
+	var sawAssistantCall bool
+	var sawToolOutput bool
+	for _, msg := range result.Messages {
+		if len(msg.ToolCalls) > 0 {
+			sawAssistantCall = true
+		}
+		if msg.Role == "tool" && msg.ToolCallID == "call-1" {
+			sawToolOutput = true
+		}
+	}
+	if sawAssistantCall != sawToolOutput {
+		t.Fatalf("compacted messages = %+v, want assistant tool call and tool output kept or dropped together", result.Messages)
+	}
+}
+
+func TestRecentMessageCompactorDropsWholeToolTransactionWhenNeeded(t *testing.T) {
+	compactor := RecentMessageCompactor{}
+	messages := []provider.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "older user"},
+		{
+			Role:    "assistant",
+			Content: "calling tool",
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call-1",
+				Name:      "echo",
+				Arguments: map[string]any{"text": "hello"},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call-1", Content: "echo:hello"},
+		{Role: "user", Content: "latest user"},
+	}
+
+	result := compactor.Compact(ContextCompactInput{
+		Messages:     messages,
+		TargetTokens: 10,
+	})
+
+	if len(result.Messages) != 2 {
+		t.Fatalf("compacted messages len = %d, want 2", len(result.Messages))
+	}
+	if result.Messages[0].Role != "system" || result.Messages[1].Role != "user" || result.Messages[1].Content != "latest user" {
+		t.Fatalf("compacted messages = %+v, want only system and latest user", result.Messages)
+	}
+}
+
+func TestRecentMessageCompactorProducesValidResponsesToolHistory(t *testing.T) {
+	compactor := RecentMessageCompactor{}
+	messages := []provider.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "older user"},
+		{
+			Role:    "assistant",
+			Content: "Let me call a tool",
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call-1",
+				Name:      "echo",
+				Arguments: map[string]any{"text": "hello"},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call-1", Content: "echo:hello"},
+		{Role: "user", Content: "latest user"},
+	}
+
+	compacted := compactor.Compact(ContextCompactInput{
+		Messages:     messages,
+		TargetTokens: 40,
+	}).Messages
+
+	_, input := provider.SerializeResponsesInputForTest(compacted)
+	var callIDs map[string]struct{} = make(map[string]struct{})
+	var outputIDs map[string]struct{} = make(map[string]struct{})
+	for _, item := range input {
+		switch item["type"] {
+		case "function_call":
+			if id, ok := item["call_id"].(string); ok && id != "" {
+				callIDs[id] = struct{}{}
+			}
+		case "function_call_output":
+			if id, ok := item["call_id"].(string); ok && id != "" {
+				outputIDs[id] = struct{}{}
+			}
+		}
+	}
+	for id := range callIDs {
+		if _, ok := outputIDs[id]; !ok {
+			t.Fatalf("serialized input = %+v, want output for function call %q", input, id)
+		}
+	}
+}
+
 func TestLoopRetriesRetryableModelErrors(t *testing.T) {
 	model := &flakyModel{
 		errs: []error{

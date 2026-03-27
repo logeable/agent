@@ -134,6 +134,10 @@ type ContextCompactResult struct {
 	DroppedMessages int
 }
 
+type compactMessageBlock struct {
+	messages []provider.Message
+}
+
 // RecentMessageCompactor keeps the system prompt and the newest messages.
 //
 // Why:
@@ -148,7 +152,6 @@ func (RecentMessageCompactor) Compact(input ContextCompactInput) ContextCompactR
 
 	result := make([]provider.Message, 0, len(input.Messages))
 	start := 0
-	var tail []provider.Message
 	if input.Messages[0].Role == "system" {
 		result = append(result, input.Messages[0])
 		start = 1
@@ -156,25 +159,31 @@ func (RecentMessageCompactor) Compact(input ContextCompactInput) ContextCompactR
 
 	estimator := ApproximateTokenEstimator{}
 	currentTokens := estimator.EstimateMessages(result)
-	pinned := make(map[int]struct{})
-	if len(input.Messages) > start {
-		lastIdx := len(input.Messages) - 1
-		tail = append(tail, input.Messages[lastIdx])
-		currentTokens += estimator.EstimateMessages(tail)
-		pinned[lastIdx] = struct{}{}
+	blocks := buildCompactBlocks(input.Messages[start:])
+	if len(blocks) == 0 {
+		return ContextCompactResult{
+			Messages:        result,
+			Strategy:        "recent_trim",
+			DroppedMessages: len(input.Messages) - len(result),
+		}
 	}
 
-	for i := len(input.Messages) - 1; i >= start; i-- {
-		if _, ok := pinned[i]; ok {
-			continue
-		}
-		candidate := input.Messages[i]
-		candidateTokens := estimator.EstimateMessages([]provider.Message{candidate})
+	tail := append([]provider.Message(nil), blocks[len(blocks)-1].messages...)
+	currentTokens += estimator.EstimateMessages(tail)
+
+	selected := make([]compactMessageBlock, 0, len(blocks))
+	for i := len(blocks) - 2; i >= 0; i-- {
+		candidate := blocks[i].messages
+		candidateTokens := estimator.EstimateMessages(candidate)
 		if len(result) > 0 && currentTokens+candidateTokens > input.TargetTokens {
 			continue
 		}
-		result = append([]provider.Message{candidate}, result...)
+		selected = append([]compactMessageBlock{{messages: candidate}}, selected...)
 		currentTokens += candidateTokens
+	}
+
+	for _, block := range selected {
+		result = append(result, block.messages...)
 	}
 	result = append(result, tail...)
 
@@ -187,6 +196,48 @@ func (RecentMessageCompactor) Compact(input ContextCompactInput) ContextCompactR
 		Strategy:        "recent_trim",
 		DroppedMessages: len(input.Messages) - len(result),
 	}
+}
+
+func buildCompactBlocks(messages []provider.Message) []compactMessageBlock {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	blocks := make([]compactMessageBlock, 0, len(messages))
+	for i := 0; i < len(messages); {
+		msg := messages[i]
+		if len(msg.ToolCalls) == 0 {
+			blocks = append(blocks, compactMessageBlock{
+				messages: []provider.Message{msg},
+			})
+			i++
+			continue
+		}
+
+		callIDs := make(map[string]struct{}, len(msg.ToolCalls))
+		for _, call := range msg.ToolCalls {
+			if call.ID != "" {
+				callIDs[call.ID] = struct{}{}
+			}
+		}
+
+		block := []provider.Message{msg}
+		j := i + 1
+		for ; j < len(messages); j++ {
+			next := messages[j]
+			if next.Role != "tool" {
+				break
+			}
+			if _, ok := callIDs[next.ToolCallID]; !ok {
+				break
+			}
+			block = append(block, next)
+		}
+		blocks = append(blocks, compactMessageBlock{messages: block})
+		i = j
+	}
+
+	return blocks
 }
 
 // BuildMessages assembles the messages for one model call.
