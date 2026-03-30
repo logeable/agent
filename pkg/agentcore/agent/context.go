@@ -62,7 +62,7 @@ func (b ContextBudget) compactor() compaction.ContextCompactor {
 	if b.Compactor != nil {
 		return b.Compactor
 	}
-	return compaction.RecentMessageCompactor{}
+	return compaction.TurnAwareCompactor{}
 }
 
 // BuildMessages assembles the messages for one model call.
