@@ -7,18 +7,21 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/logeable/agent/internal/agentclirender"
 	"github.com/logeable/agent/pkg/agentcore/agent"
 	"github.com/logeable/agent/pkg/agentcore/tooling"
+	"golang.org/x/term"
 )
 
 // SingleRunOptions controls the non-interactive one-shot execution path.
 type SingleRunOptions struct {
-	SessionKey    string
-	Message       string
-	Stream        bool
-	ShowReasoning bool
-	ShowEvents    bool
-	AutoApprove   bool
+	SessionKey     string
+	Message        string
+	Stream         bool
+	ShowReasoning  bool
+	ShowEvents     bool
+	AutoApprove    bool
+	RenderMarkdown bool
 }
 
 // RunSingleMessage executes one user message and prints its output directly to
@@ -43,9 +46,28 @@ func RunSingleMessage(loop *agent.Loop, opts SingleRunOptions) (int, error) {
 		return 1, err
 	}
 	if !stopStreaming() {
-		fmt.Println(resp)
+		fmt.Println(renderAssistantMarkdown(resp, opts.RenderMarkdown))
 	}
 	return 0, nil
+}
+
+func renderAssistantMarkdown(content string, enabled bool) string {
+	if !enabled {
+		return strings.TrimSpace(content)
+	}
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return strings.TrimSpace(content)
+	}
+
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		return agentclirender.RenderMarkdown(content, 0)
+	}
+	renderWidth := width - 2
+	if renderWidth < 20 {
+		renderWidth = 20
+	}
+	return agentclirender.RenderMarkdown(content, renderWidth)
 }
 
 // BuildCLIApprovalHandler returns the plain terminal approval flow used by the

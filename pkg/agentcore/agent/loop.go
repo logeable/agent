@@ -86,20 +86,21 @@ type ApprovalHandler func(ctx context.Context, req tooling.ApprovalRequest) (app
 // Why:
 // These are the minimum moving parts needed for tool-using agent behavior.
 type Loop struct {
-	Model         provider.ChatModel
-	AgentID       string
-	ModelName     string
-	Tools         *tooling.Registry
-	Sessions      session.Store
-	Context       ContextBuilder
-	ContextBudget ContextBudget
-	MaxIterations int
-	Options       map[string]any
-	Events        *EventBus
-	Approval      ApprovalHandler
-	nextTurnID    atomic.Uint64
-	closeMu       sync.Mutex
-	closers       []func() error
+	Model            provider.ChatModel
+	AgentID          string
+	ModelName        string
+	Tools            *tooling.Registry
+	Sessions         session.Store
+	Context          ContextBuilder
+	ContextBudget    ContextBudget
+	DisableStreaming bool
+	MaxIterations    int
+	Options          map[string]any
+	Events           *EventBus
+	Approval         ApprovalHandler
+	nextTurnID       atomic.Uint64
+	closeMu          sync.Mutex
+	closers          []func() error
 }
 
 // Process executes one user turn.
@@ -186,7 +187,8 @@ func (l *Loop) Process(ctx context.Context, sessionKey, userMessage string) (str
 				DroppedMessages:       budgetReport.DroppedMessages,
 			})
 		}
-		_, streaming := l.Model.(provider.StreamingChatModel)
+		_, providerSupportsStreaming := l.Model.(provider.StreamingChatModel)
+		streaming := providerSupportsStreaming && !l.DisableStreaming
 		l.emit(meta, EventModelRequest, ModelRequestPayload{
 			Model:         l.ModelName,
 			MessagesCount: len(requestMessages),
@@ -406,28 +408,30 @@ func (l *Loop) callModelOnce(
 	meta EventMeta,
 	messages []provider.Message,
 ) (*provider.Response, error) {
-	if streamingModel, ok := l.Model.(provider.StreamingChatModel); ok {
-		return streamingModel.ChatStream(
-			ctx,
-			messages,
-			l.Tools.Definitions(),
-			l.ModelName,
-			l.Options,
-			func(chunk provider.StreamChunk) {
-				switch chunk.Kind {
-				case provider.StreamChunkKindReasoning:
-					l.emit(meta, EventModelReasoning, ModelReasoningPayload{
-						Delta:       chunk.Delta,
-						Accumulated: chunk.Accumulated,
-					})
-				default:
-					l.emit(meta, EventModelDelta, ModelDeltaPayload{
-						Delta:       chunk.Delta,
-						Accumulated: chunk.Accumulated,
-					})
-				}
-			},
-		)
+	if !l.DisableStreaming {
+		if streamingModel, ok := l.Model.(provider.StreamingChatModel); ok {
+			return streamingModel.ChatStream(
+				ctx,
+				messages,
+				l.Tools.Definitions(),
+				l.ModelName,
+				l.Options,
+				func(chunk provider.StreamChunk) {
+					switch chunk.Kind {
+					case provider.StreamChunkKindReasoning:
+						l.emit(meta, EventModelReasoning, ModelReasoningPayload{
+							Delta:       chunk.Delta,
+							Accumulated: chunk.Accumulated,
+						})
+					default:
+						l.emit(meta, EventModelDelta, ModelDeltaPayload{
+							Delta:       chunk.Delta,
+							Accumulated: chunk.Accumulated,
+						})
+					}
+				},
+			)
+		}
 	}
 	return l.Model.Chat(ctx, messages, l.Tools.Definitions(), l.ModelName, l.Options)
 }

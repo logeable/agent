@@ -39,6 +39,7 @@ func main() {
 		showReasoningSet bool
 		showEvents       bool
 		autoApprove      bool
+		renderMarkdown   bool
 	)
 
 	flag.StringVar(&message, "m", "", "Process a single message and exit")
@@ -60,6 +61,7 @@ func main() {
 	})
 	flag.BoolVar(&showEvents, "events", false, "Show key runtime events")
 	flag.BoolVar(&autoApprove, "auto-approve", false, "Automatically approve tool approval requests")
+	flag.BoolVar(&renderMarkdown, "render-markdown", true, "Render assistant messages as Markdown in terminal views")
 	flag.Parse()
 
 	loop, err := buildLoop(profileName, providerKind, modelName, baseURL, apiKey)
@@ -68,6 +70,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer loop.Close()
+	loop.DisableStreaming = !stream
 	loop.Events = agent.NewEventBus()
 	defer loop.Events.Close()
 	stdinMessage, err := readMessageFromStdin(os.Stdin)
@@ -88,12 +91,13 @@ func main() {
 			showReasoning = false
 		}
 		exitCode, err := agentclirun.RunSingleMessage(loop, agentclirun.SingleRunOptions{
-			SessionKey:    sessionKey,
-			Message:       message,
-			Stream:        stream,
-			ShowReasoning: showReasoning,
-			ShowEvents:    showEvents,
-			AutoApprove:   autoApprove,
+			SessionKey:     sessionKey,
+			Message:        message,
+			Stream:         stream,
+			ShowReasoning:  showReasoning,
+			ShowEvents:     showEvents,
+			AutoApprove:    autoApprove,
+			RenderMarkdown: renderMarkdown,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -107,12 +111,13 @@ func main() {
 	}
 
 	if err := agentclitui.Run(loop, agentclitui.Options{
-		SessionKey:    sessionKey,
-		ProfileName:   displayProfileName(profileName),
-		Stream:        stream,
-		ShowReasoning: showReasoning,
-		ShowEvents:    showEvents,
-		AutoApprove:   autoApprove,
+		SessionKey:     sessionKey,
+		ProfileName:    displayProfileName(profileName),
+		Stream:         stream,
+		ShowReasoning:  showReasoning,
+		ShowEvents:     showEvents,
+		AutoApprove:    autoApprove,
+		RenderMarkdown: renderMarkdown,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

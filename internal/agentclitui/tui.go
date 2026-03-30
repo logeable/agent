@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/logeable/agent/internal/agentclirender"
 	"github.com/logeable/agent/internal/agentclirun"
 	"github.com/logeable/agent/pkg/agentcore/agent"
 	"github.com/logeable/agent/pkg/agentcore/tooling"
@@ -18,12 +19,13 @@ import (
 // Options controls the interactive TUI behavior without leaking TUI details
 // into cmd/agentcli.
 type Options struct {
-	SessionKey    string
-	ProfileName   string
-	Stream        bool
-	ShowReasoning bool
-	ShowEvents    bool
-	AutoApprove   bool
+	SessionKey     string
+	ProfileName    string
+	Stream         bool
+	ShowReasoning  bool
+	ShowEvents     bool
+	AutoApprove    bool
+	RenderMarkdown bool
 }
 
 type processDoneMsg struct {
@@ -57,12 +59,13 @@ type messageBlock struct {
 }
 
 type model struct {
-	loop          *agent.Loop
-	profileName   string
-	sessionKey    string
-	stream        bool
-	showEvents    bool
-	showReasoning bool
+	loop           *agent.Loop
+	profileName    string
+	sessionKey     string
+	stream         bool
+	showEvents     bool
+	showReasoning  bool
+	renderMarkdown bool
 
 	input          textarea.Model
 	messageView    viewport.Model
@@ -171,6 +174,7 @@ func newModel(loop *agent.Loop, opts Options) model {
 		stream:             opts.Stream,
 		showEvents:         opts.ShowEvents,
 		showReasoning:      opts.ShowReasoning,
+		renderMarkdown:     opts.RenderMarkdown,
 		input:              input,
 		messageView:        messageView,
 		status:             "Ready",
@@ -486,7 +490,7 @@ func (m model) renderTranscript() string {
 	width := maxInt(20, m.messageView.Width)
 	blocks := make([]string, 0, len(m.messages))
 	for _, block := range m.messages {
-		blocks = append(blocks, renderMessageBlock(block, width, m.reasoningExpanded))
+		blocks = append(blocks, renderMessageBlock(block, width, m.reasoningExpanded, m.renderMarkdown))
 	}
 	return strings.Join(blocks, "\n\n")
 }
@@ -603,7 +607,7 @@ func (m *model) refreshLayout() {
 	m.messageView.GotoBottom()
 }
 
-func renderMessageBlock(block messageBlock, width int, reasoningExpanded bool) string {
+func renderMessageBlock(block messageBlock, width int, reasoningExpanded bool, renderMarkdown bool) string {
 	titleStyle := lipgloss.NewStyle().Bold(true)
 	boxStyle := lipgloss.NewStyle().
 		Padding(0, 1)
@@ -646,6 +650,9 @@ func renderMessageBlock(block messageBlock, width int, reasoningExpanded bool) s
 	body := strings.TrimSpace(block.content)
 	if body == "" {
 		body = " "
+	}
+	if block.role == roleAssistant && renderMarkdown {
+		body = agentclirender.RenderMarkdown(body, contentWidth)
 	}
 	if block.role == roleReasoning && !reasoningExpanded {
 		body = summarizeReasoning(body)

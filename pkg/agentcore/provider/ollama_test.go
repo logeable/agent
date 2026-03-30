@@ -180,3 +180,65 @@ func TestOllamaModelStreamsContentAndReasoning(t *testing.T) {
 		t.Fatalf("deltas = %#v", deltas)
 	}
 }
+
+func TestOllamaModelFallsBackToAnswerTagInThinking(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"message":{
+				"content":"",
+				"thinking":"preface <answer>现在是 11:28。</answer>"
+			},
+			"done":true
+		}`))
+	}))
+	defer server.Close()
+
+	model, err := NewOllamaModel(OllamaConfig{
+		BaseURL: server.URL,
+		Model:   "qwen3",
+	})
+	if err != nil {
+		t.Fatalf("NewOllamaModel() error = %v", err)
+	}
+
+	resp, err := model.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, "", nil)
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if resp.Content != "现在是 11:28。" {
+		t.Fatalf("content = %q, want fallback answer", resp.Content)
+	}
+}
+
+func TestOllamaModelStreamFallsBackToAnswerTagInThinking(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte("{\"message\":{\"thinking\":\"<answer>现在是 11:28。\"},\"done\":false}\n"))
+		_, _ = w.Write([]byte("{\"message\":{\"thinking\":\"</answer>\"},\"done\":true}\n"))
+	}))
+	defer server.Close()
+
+	model, err := NewOllamaModel(OllamaConfig{
+		BaseURL: server.URL,
+		Model:   "qwen3",
+	})
+	if err != nil {
+		t.Fatalf("NewOllamaModel() error = %v", err)
+	}
+
+	resp, err := model.ChatStream(
+		context.Background(),
+		[]Message{{Role: "user", Content: "hi"}},
+		nil,
+		"",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if resp.Content != "现在是 11:28。" {
+		t.Fatalf("content = %q, want fallback answer", resp.Content)
+	}
+}

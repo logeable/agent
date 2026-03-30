@@ -126,9 +126,11 @@ func (m *overflowThenScriptedModel) Chat(
 }
 
 type streamingScriptedModel struct {
-	response provider.Response
-	chunks   []string
-	kinds    []provider.StreamChunkKind
+	response    provider.Response
+	chunks      []string
+	kinds       []provider.StreamChunkKind
+	chatCalls   int
+	streamCalls int
 }
 
 func (m *streamingScriptedModel) Chat(
@@ -138,6 +140,7 @@ func (m *streamingScriptedModel) Chat(
 	_ string,
 	_ map[string]any,
 ) (*provider.Response, error) {
+	m.chatCalls++
 	return &m.response, nil
 }
 
@@ -149,6 +152,7 @@ func (m *streamingScriptedModel) ChatStream(
 	_ map[string]any,
 	onChunk func(provider.StreamChunk),
 ) (*provider.Response, error) {
+	m.streamCalls++
 	var accumulated string
 	for _, chunk := range m.chunks {
 		accumulated += chunk
@@ -164,6 +168,34 @@ func (m *streamingScriptedModel) ChatStream(
 		})
 	}
 	return &m.response, nil
+}
+
+func TestLoopDisablesStreamingWhenRequested(t *testing.T) {
+	model := &streamingScriptedModel{
+		response: provider.Response{Content: "done"},
+		chunks:   []string{"partial"},
+	}
+	loop := Loop{
+		Model:            model,
+		ModelName:        "demo",
+		Tools:            tooling.NewRegistry(),
+		Sessions:         session.NewMemoryStore(),
+		DisableStreaming: true,
+	}
+
+	got, err := loop.Process(context.Background(), "s1", "hi")
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if got != "done" {
+		t.Fatalf("Process() = %q, want done", got)
+	}
+	if model.chatCalls != 1 {
+		t.Fatalf("chatCalls = %d, want 1", model.chatCalls)
+	}
+	if model.streamCalls != 0 {
+		t.Fatalf("streamCalls = %d, want 0", model.streamCalls)
+	}
 }
 
 type echoTool struct{}

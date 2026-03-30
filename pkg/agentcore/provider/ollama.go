@@ -335,8 +335,12 @@ func marshalOllamaChatRequest(req ollamaChatRequest) ([]byte, error) {
 }
 
 func parseOllamaChatResponse(decoded ollamaChatResponse) *Response {
+	content := decoded.Message.Content
+	if strings.TrimSpace(content) == "" {
+		content = extractAnswerFromThinking(decoded.Message.Thinking)
+	}
 	out := &Response{
-		Content: decoded.Message.Content,
+		Content: content,
 	}
 	if decoded.PromptEvalCount > 0 || decoded.EvalCount > 0 {
 		out.Usage = &Usage{
@@ -421,6 +425,9 @@ func parseOllamaChatStream(reader io.Reader, onChunk func(StreamChunk)) (*Respon
 	resp := &Response{
 		Content: content.String(),
 	}
+	if strings.TrimSpace(resp.Content) == "" {
+		resp.Content = extractAnswerFromThinking(reasoning.String())
+	}
 	if final != nil && (final.PromptEvalCount > 0 || final.EvalCount > 0) {
 		resp.Usage = &Usage{
 			InputTokens:  final.PromptEvalCount,
@@ -432,6 +439,28 @@ func parseOllamaChatStream(reader io.Reader, onChunk func(StreamChunk)) (*Respon
 		resp.ToolCalls = append(resp.ToolCalls, callByName[name])
 	}
 	return resp, nil
+}
+
+func extractAnswerFromThinking(thinking string) string {
+	thinking = strings.TrimSpace(thinking)
+	if thinking == "" {
+		return ""
+	}
+
+	const (
+		openTag  = "<answer>"
+		closeTag = "</answer>"
+	)
+	start := strings.Index(thinking, openTag)
+	if start < 0 {
+		return ""
+	}
+	start += len(openTag)
+	end := strings.Index(thinking[start:], closeTag)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(thinking[start : start+end])
 }
 
 func boolOption(options map[string]any, key string) (bool, bool) {
