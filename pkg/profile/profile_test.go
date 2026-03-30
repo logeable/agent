@@ -204,6 +204,24 @@ func TestBuildLoopSupportsOllamaWithoutAPIKey(t *testing.T) {
 	}
 }
 
+func TestBuildLoopUsesWorkDirOverride(t *testing.T) {
+	overrideDir := t.TempDir()
+	cfg := &Config{
+		Provider: ProviderConfig{
+			Kind:  "ollama",
+			Model: "qwen3",
+		},
+	}
+
+	loop, err := cfg.BuildLoop(BuildOptions{WorkDir: overrideDir})
+	if err != nil {
+		t.Fatalf("BuildLoop() error = %v", err)
+	}
+	if !strings.Contains(loop.Context.SystemPrompt, overrideDir) {
+		t.Fatalf("SystemPrompt = %q, want workdir %q", loop.Context.SystemPrompt, overrideDir)
+	}
+}
+
 func TestValidateRejectsExplicitFilesWithoutRoots(t *testing.T) {
 	cfg := &Config{
 		Provider: ProviderConfig{

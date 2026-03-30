@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/logeable/agent/internal/agentapp"
 	"github.com/logeable/agent/internal/agentclirun"
 	"github.com/logeable/agent/internal/agentclitui"
 	"github.com/logeable/agent/pkg/agentcore/agent"
-	"github.com/logeable/agent/pkg/profile"
 )
 
 // This command is the smallest runnable terminal application for the extracted
@@ -64,7 +63,13 @@ func main() {
 	flag.BoolVar(&renderMarkdown, "render-markdown", true, "Render assistant messages as Markdown in terminal views")
 	flag.Parse()
 
-	loop, err := buildLoop(profileName, providerKind, modelName, baseURL, apiKey)
+	loop, err := agentapp.BuildLoop(agentapp.LoopOptions{
+		ProfileName:  profileName,
+		ProviderKind: providerKind,
+		ModelName:    modelName,
+		BaseURL:      baseURL,
+		APIKey:       apiKey,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -112,7 +117,7 @@ func main() {
 
 	if err := agentclitui.Run(loop, agentclitui.Options{
 		SessionKey:     sessionKey,
-		ProfileName:    displayProfileName(profileName),
+		ProfileName:    agentapp.DisplayProfileName(profileName),
 		Stream:         stream,
 		ShowReasoning:  showReasoning,
 		ShowEvents:     showEvents,
@@ -144,121 +149,10 @@ func readMessageFromStdin(stdin *os.File) (string, error) {
 	return string(data), nil
 }
 
-func buildLoop(profileName, providerKind, modelName, baseURL, apiKey string) (*agent.Loop, error) {
-	cfgPath, err := resolveProfileArgument(profileName)
-	if err != nil {
-		return nil, err
-	}
-	if cfgPath != "" {
-		cfg, err := profile.Load(cfgPath)
-		if err != nil {
-			return nil, err
-		}
-		return cfg.BuildLoop(profile.BuildOptions{
-			ProviderKind: providerKind,
-			BaseURL:      baseURL,
-			APIKey:       apiKey,
-			Model:        modelName,
-		})
-	}
-
-	if _, err := os.Stat("agent.toml"); err == nil {
-		cfg, err := profile.Load("agent.toml")
-		if err != nil {
-			return nil, err
-		}
-		return cfg.BuildLoop(profile.BuildOptions{
-			ProviderKind: providerKind,
-			BaseURL:      baseURL,
-			APIKey:       apiKey,
-			Model:        modelName,
-		})
-	}
-
-	cfg, err := defaultCLIProfile()
-	if err != nil {
-		return nil, err
-	}
-	return cfg.BuildLoop(profile.BuildOptions{
-		ProviderKind: providerKind,
-		BaseURL:      baseURL,
-		APIKey:       apiKey,
-		Model:        modelName,
-	})
-}
-
 func resolveProfileArgument(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return "", nil
-	}
-
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("could not resolve home directory for profile lookup: %w", err)
-	}
-	return resolveProfileArgumentWithHome(value, homeDir), nil
+	return agentapp.ResolveProfileArgument(raw)
 }
 
 func resolveProfileArgumentWithHome(value, homeDir string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return ""
-	}
-
-	// Names are the ergonomic default for day-to-day CLI use. We only treat
-	// simple values as names; anything with a path separator is assumed to be a
-	// real path and skips the name lookup.
-	if !filepath.IsAbs(trimmed) && !strings.ContainsRune(trimmed, filepath.Separator) {
-		name := strings.TrimSuffix(trimmed, ".toml")
-		if homeDir != "" {
-			candidate := filepath.Join(homeDir, ".agentcli", name+".toml")
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate
-			}
-		}
-	}
-
-	return trimmed
-}
-
-func displayProfileName(raw string) string {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return ""
-	}
-	if filepath.IsAbs(value) || strings.ContainsRune(value, filepath.Separator) {
-		base := filepath.Base(value)
-		return strings.TrimSuffix(base, filepath.Ext(base))
-	}
-	return strings.TrimSuffix(value, ".toml")
-}
-
-func defaultCLIProfile() (*profile.Config, error) {
-	return &profile.Config{
-		Name: "agentcli",
-		Provider: profile.ProviderConfig{
-			Kind: "openai",
-		},
-		Agent: profile.AgentConfig{
-			ID:            "agentcli",
-			Identity:      profile.BuildDefaultIdentity(),
-			Soul:          profile.BuildDefaultSoul(),
-			MaxIterations: agent.DefaultMaxIterations,
-		},
-		Tools: profile.ToolsConfig{
-			Enabled: []string{"read_file", "edit_file", "write_file", "bash", "web_fetch"},
-			ReadFile: profile.ReadFileToolConfig{
-				MaxBytes: 32 * 1024,
-			},
-			Bash: profile.BashToolConfig{
-				TimeoutMS:      30_000,
-				MaxOutputBytes: 64 * 1024,
-			},
-			WebFetch: profile.WebFetchToolConfig{
-				TimeoutMS: 20_000,
-				MaxBytes:  128 * 1024,
-			},
-		},
-	}, nil
+	return agentapp.ResolveProfileArgumentWithHomeForTests(value, homeDir)
 }

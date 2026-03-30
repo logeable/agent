@@ -224,6 +224,7 @@ type BuildOptions struct {
 	BaseURL      string
 	APIKey       string
 	Model        string
+	WorkDir      string
 }
 
 // Load reads and parses a TOML profile file.
@@ -306,7 +307,7 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		return nil, err
 	}
 
-	workDir, err := c.resolvedWorkDir()
+	workDir, err := c.resolvedWorkDir(opts.WorkDir)
 	if err != nil {
 		return nil, err
 	}
@@ -640,7 +641,19 @@ func (c *Config) enabledTools() []string {
 	return enabled
 }
 
-func (c *Config) resolvedWorkDir() (string, error) {
+func (c *Config) resolvedWorkDir(override string) (string, error) {
+	if strings.TrimSpace(override) != "" {
+		if filepath.IsAbs(override) {
+			return filepath.Clean(override), nil
+		}
+
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("could not resolve working directory: %w", err)
+		}
+		return filepath.Clean(filepath.Join(cwd, override)), nil
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("could not resolve working directory: %w", err)
