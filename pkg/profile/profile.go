@@ -259,7 +259,7 @@ func (c *Config) Validate() error {
 	if providerKind == "" {
 		providerKind = "openai"
 	}
-	if providerKind != "openai" && providerKind != "openai_response" {
+	if providerKind != "openai" && providerKind != "openai_response" && providerKind != "ollama" {
 		return fmt.Errorf("unsupported provider kind %q", c.Provider.Kind)
 	}
 
@@ -384,12 +384,20 @@ func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, erro
 	if kind == "" {
 		kind = "openai"
 	}
-	baseURL := firstNonEmpty(opts.BaseURL, c.Provider.BaseURL, os.Getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1")
-	apiKeyEnv := firstNonEmpty(c.Provider.APIKeyEnv, "OPENAI_API_KEY")
+	baseURLDefault := "https://api.openai.com/v1"
+	apiKeyEnvDefault := "OPENAI_API_KEY"
+	modelEnvDefault := "OPENAI_MODEL"
+	if kind == "ollama" {
+		baseURLDefault = "http://localhost:11434/api"
+		apiKeyEnvDefault = "OLLAMA_API_KEY"
+		modelEnvDefault = "OLLAMA_MODEL"
+	}
+	baseURL := firstNonEmpty(opts.BaseURL, c.Provider.BaseURL, os.Getenv(strings.TrimSuffix(apiKeyEnvDefault, "_API_KEY")+"_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), baseURLDefault)
+	apiKeyEnv := firstNonEmpty(c.Provider.APIKeyEnv, apiKeyEnvDefault)
 	apiKey := firstNonEmpty(opts.APIKey, c.Provider.APIKey, os.Getenv(apiKeyEnv))
-	modelName := firstNonEmpty(opts.Model, c.Provider.Model, os.Getenv("OPENAI_MODEL"))
+	modelName := firstNonEmpty(opts.Model, c.Provider.Model, os.Getenv(modelEnvDefault), os.Getenv("OPENAI_MODEL"))
 
-	if strings.TrimSpace(apiKey) == "" {
+	if kind != "ollama" && strings.TrimSpace(apiKey) == "" {
 		return nil, "", fmt.Errorf("provider API key is required")
 	}
 	if strings.TrimSpace(modelName) == "" {
@@ -409,6 +417,16 @@ func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, erro
 		return model, modelName, nil
 	case "openai_response":
 		model, err := provider.NewOpenAIResponseModel(provider.OpenAIResponseConfig{
+			BaseURL: baseURL,
+			APIKey:  apiKey,
+			Model:   modelName,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return model, modelName, nil
+	case "ollama":
+		model, err := provider.NewOllamaModel(provider.OllamaConfig{
 			BaseURL: baseURL,
 			APIKey:  apiKey,
 			Model:   modelName,

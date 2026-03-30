@@ -187,6 +187,23 @@ func TestBuildLoopAllowsProviderKindOverride(t *testing.T) {
 	}
 }
 
+func TestBuildLoopSupportsOllamaWithoutAPIKey(t *testing.T) {
+	cfg := &Config{
+		Provider: ProviderConfig{
+			Kind:  "ollama",
+			Model: "qwen3",
+		},
+	}
+
+	loop, err := cfg.BuildLoop(BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildLoop() error = %v", err)
+	}
+	if _, ok := loop.Model.(*provider.OllamaModel); !ok {
+		t.Fatalf("loop.Model = %T, want *provider.OllamaModel", loop.Model)
+	}
+}
+
 func TestValidateRejectsExplicitFilesWithoutRoots(t *testing.T) {
 	cfg := &Config{
 		Provider: ProviderConfig{
