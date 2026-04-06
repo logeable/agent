@@ -38,6 +38,49 @@ Detailed instructions.
 	}
 }
 
+func TestLoadFollowsSymlinkedSkillDirectory(t *testing.T) {
+	root := t.TempDir()
+	targetDir := filepath.Join(root, "target-skill")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "SKILL.md"), []byte(`# Linked Skill
+Loads through a symlinked directory.
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	linkDir := filepath.Join(root, "linked-skill")
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	found, err := Load([]string{root})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(found) != 2 {
+		t.Fatalf("skill count = %d, want 2", len(found))
+	}
+
+	var linked Skill
+	for _, skill := range found {
+		if skill.Path == filepath.Join(linkDir, "SKILL.md") {
+			linked = skill
+			break
+		}
+	}
+	if linked.Path == "" {
+		t.Fatalf("missing symlinked skill in %#v", found)
+	}
+	if linked.Name != "linked-skill" {
+		t.Fatalf("name = %q, want linked-skill", linked.Name)
+	}
+	if linked.Description != "Loads through a symlinked directory." {
+		t.Fatalf("description = %q", linked.Description)
+	}
+}
+
 func TestBuildSummaryIncludesSkillPath(t *testing.T) {
 	summary := BuildSummary([]Skill{{
 		Name:        "agent-browser",

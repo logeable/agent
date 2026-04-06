@@ -42,7 +42,18 @@ func Load(roots []string) ([]Skill, error) {
 		}
 
 		for _, entry := range entries {
-			if !entry.IsDir() {
+			isDir := entry.IsDir()
+			if !isDir && entry.Type()&os.ModeSymlink != 0 {
+				info, err := os.Stat(filepath.Join(root, entry.Name()))
+				if err != nil {
+					if os.IsNotExist(err) {
+						continue
+					}
+					return nil, fmt.Errorf("stat skill entry %q: %w", filepath.Join(root, entry.Name()), err)
+				}
+				isDir = info.IsDir()
+			}
+			if !isDir {
 				continue
 			}
 
