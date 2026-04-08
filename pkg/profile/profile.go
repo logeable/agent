@@ -140,13 +140,14 @@ Max tool-call iterations per turn: %d
 // The goal of the first version is to keep profile files narrow and stable.
 // They exist to declare instance parameters, not to become a full platform DSL.
 type Config struct {
-	Name     string           `toml:"name"`
-	Provider ProviderConfig   `toml:"provider"`
-	Agent    AgentConfig      `toml:"agent"`
-	Files    FilesConfig      `toml:"files"`
-	Skills   SkillsConfig     `toml:"skills"`
-	MCP      mcpbridge.Config `toml:"mcp"`
-	Tools    ToolsConfig      `toml:"tools"`
+	Name          string              `toml:"name"`
+	Provider      ProviderConfig      `toml:"provider"`
+	Agent         AgentConfig         `toml:"agent"`
+	Files         FilesConfig         `toml:"files"`
+	Skills        SkillsConfig        `toml:"skills"`
+	MCP           mcpbridge.Config    `toml:"mcp"`
+	Tools         ToolsConfig         `toml:"tools"`
+	Orchestration OrchestrationConfig `toml:"orchestration"`
 
 	sourcePath string
 }
@@ -212,6 +213,40 @@ type WebFetchToolConfig struct {
 	TimeoutMS int64  `toml:"timeout_ms"`
 	MaxBytes  int64  `toml:"max_bytes"`
 	UserAgent string `toml:"user_agent"`
+}
+
+// OrchestrationConfig declares optional higher-level runtime modules.
+type OrchestrationConfig struct {
+	Delegation DelegationConfig `toml:"delegation"`
+	Automation AutomationConfig `toml:"automation"`
+	CodeExec   CodeExecConfig   `toml:"codeexec"`
+}
+
+type DelegationConfig struct {
+	Enabled              bool     `toml:"enabled"`
+	MaxDepth             int      `toml:"max_depth"`
+	MaxConcurrent        int      `toml:"max_concurrent"`
+	DefaultMaxIterations int      `toml:"default_max_iterations"`
+	AllowedTools         []string `toml:"allowed_tools"`
+	BlockedTools         []string `toml:"blocked_tools"`
+}
+
+type AutomationConfig struct {
+	Enabled           bool   `toml:"enabled"`
+	TickMS            int64  `toml:"tick_ms"`
+	DefaultIntervalMS int64  `toml:"default_interval_ms"`
+	DefaultTimeoutMS  int64  `toml:"default_timeout_ms"`
+	DefaultMaxRetries int    `toml:"default_max_retries"`
+	DefaultSessionKey string `toml:"default_session_key"`
+}
+
+type CodeExecConfig struct {
+	Enabled        bool     `toml:"enabled"`
+	TimeoutMS      int64    `toml:"timeout_ms"`
+	MaxToolCalls   int      `toml:"max_tool_calls"`
+	AllowedTools   []string `toml:"allowed_tools"`
+	MaxStdoutBytes int      `toml:"max_stdout_bytes"`
+	MaxStderrBytes int      `toml:"max_stderr_bytes"`
 }
 
 // BuildOptions lets callers override selected profile values at runtime.
@@ -281,6 +316,33 @@ func (c *Config) Validate() error {
 	}
 	if c.Agent.MaxIterations < 0 {
 		return fmt.Errorf("agent.max_iterations must be zero or greater")
+	}
+	if c.Orchestration.Delegation.MaxDepth < 0 {
+		return fmt.Errorf("orchestration.delegation.max_depth must be zero or greater")
+	}
+	if c.Orchestration.Delegation.MaxConcurrent < 0 {
+		return fmt.Errorf("orchestration.delegation.max_concurrent must be zero or greater")
+	}
+	if c.Orchestration.Delegation.DefaultMaxIterations < 0 {
+		return fmt.Errorf("orchestration.delegation.default_max_iterations must be zero or greater")
+	}
+	if c.Orchestration.Automation.TickMS < 0 {
+		return fmt.Errorf("orchestration.automation.tick_ms must be zero or greater")
+	}
+	if c.Orchestration.Automation.DefaultIntervalMS < 0 {
+		return fmt.Errorf("orchestration.automation.default_interval_ms must be zero or greater")
+	}
+	if c.Orchestration.Automation.DefaultTimeoutMS < 0 {
+		return fmt.Errorf("orchestration.automation.default_timeout_ms must be zero or greater")
+	}
+	if c.Orchestration.Automation.DefaultMaxRetries < 0 {
+		return fmt.Errorf("orchestration.automation.default_max_retries must be zero or greater")
+	}
+	if c.Orchestration.CodeExec.TimeoutMS < 0 {
+		return fmt.Errorf("orchestration.codeexec.timeout_ms must be zero or greater")
+	}
+	if c.Orchestration.CodeExec.MaxToolCalls < 0 {
+		return fmt.Errorf("orchestration.codeexec.max_tool_calls must be zero or greater")
 	}
 	for name, server := range c.MCP.Servers {
 		if server.Enabled != nil && !*server.Enabled {

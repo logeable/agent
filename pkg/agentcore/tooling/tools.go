@@ -171,6 +171,28 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return tool, ok
 }
 
+// Tools returns a deterministic snapshot of the registered runtime tools.
+//
+// Why:
+// Higher-level orchestration layers may need to clone, filter, or wrap the
+// registry without taking ownership of its internal map.
+func (r *Registry) Tools() []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sortStrings(names)
+
+	out := make([]Tool, 0, len(names))
+	for _, name := range names {
+		out = append(out, r.tools[name])
+	}
+	return out
+}
+
 // Execute resolves a tool by name and runs it.
 //
 // Why:

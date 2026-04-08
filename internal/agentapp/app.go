@@ -1,12 +1,18 @@
 package agentapp
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/logeable/agent/pkg/agentcore/agent"
+	"github.com/logeable/agent/pkg/automation"
+	"github.com/logeable/agent/pkg/codeexec"
+	"github.com/logeable/agent/pkg/delegation"
+	"github.com/logeable/agent/pkg/orchestration"
 	"github.com/logeable/agent/pkg/profile"
 )
 
@@ -19,50 +25,176 @@ type LoopOptions struct {
 	WorkDir      string
 }
 
+type Runtime struct {
+	Config         *profile.Config
+	Loop           *agent.Loop
+	Events         *orchestration.EventBus
+	Delegation     *delegation.LoopChildRunner
+	Batch          *delegation.BatchRunner
+	Automation     *automation.MemoryScheduler
+	AutomationJobs *automation.MemoryJobStore
+	AutomationRuns *automation.MemoryRunStore
+	CodeExec       *codeexec.LocalSandbox
+}
+
 func BuildLoop(opts LoopOptions) (*agent.Loop, error) {
-	cfgPath, err := ResolveProfileArgument(opts.ProfileName)
+	cfg, err := loadConfig(opts)
 	if err != nil {
 		return nil, err
 	}
-	if cfgPath != "" {
-		cfg, err := profile.Load(cfgPath)
-		if err != nil {
-			return nil, err
-		}
-		return cfg.BuildLoop(profile.BuildOptions{
-			ProviderKind: opts.ProviderKind,
-			BaseURL:      opts.BaseURL,
-			APIKey:       opts.APIKey,
-			Model:        opts.ModelName,
-			WorkDir:      opts.WorkDir,
-		})
-	}
+	return cfg.BuildLoop(buildOptions(opts))
+}
 
-	if _, err := os.Stat("agent.toml"); err == nil {
-		cfg, err := profile.Load("agent.toml")
-		if err != nil {
-			return nil, err
-		}
-		return cfg.BuildLoop(profile.BuildOptions{
-			ProviderKind: opts.ProviderKind,
-			BaseURL:      opts.BaseURL,
-			APIKey:       opts.APIKey,
-			Model:        opts.ModelName,
-			WorkDir:      opts.WorkDir,
-		})
-	}
-
-	cfg, err := DefaultCLIProfile()
+func BuildRuntime(opts LoopOptions) (*Runtime, error) {
+	cfg, err := loadConfig(opts)
 	if err != nil {
 		return nil, err
 	}
-	return cfg.BuildLoop(profile.BuildOptions{
+	loop, err := cfg.BuildLoop(buildOptions(opts))
+	if err != nil {
+		return nil, err
+	}
+
+	events := orchestration.NewEventBus()
+	runtime := &Runtime{
+		Config: cfg,
+		Loop:   loop,
+		Events: events,
+	}
+
+	loopFactory := func(ctx context.Context, spec delegation.ChildSpec) (*agent.Loop, error) {
+		childCfg := *cfg
+		childCfg.Agent = cfg.Agent
+		childCfg.Provider = cfg.Provider
+		childCfg.Tools = cfg.Tools
+		if spec.MaxIterations > 0 {
+			childCfg.Agent.MaxIterations = spec.MaxIterations
+		}
+		if len(spec.Tools) > 0 {
+			childCfg.Tools.Enabled = append([]string(nil), spec.Tools...)
+		}
+		childOpts := profile.BuildOptions{
+			ProviderKind: opts.ProviderKind,
+			BaseURL:      opts.BaseURL,
+			APIKey:       opts.APIKey,
+			Model:        firstNonEmpty(spec.Model, opts.ModelName),
+			WorkDir:      firstNonEmpty(spec.WorkDir, opts.WorkDir),
+		}
+		childLoop, err := childCfg.BuildLoop(childOpts)
+		if err != nil {
+			return nil, err
+		}
+		childLoop.Approval = loop.Approval
+		return childLoop, nil
+	}
+
+	delegationPolicy := delegation.DefaultPolicy{
+		MaxDepth:      cfg.Orchestration.Delegation.MaxDepth,
+		MaxConcurrent: cfg.Orchestration.Delegation.MaxConcurrent,
+		BlockedTools:  append([]string(nil), cfg.Orchestration.Delegation.BlockedTools...),
+	}
+	runtime.Delegation = &delegation.LoopChildRunner{
+		Factory:  loopFactory,
+		Policy:   delegationPolicy,
+		Events:   events,
+		Approval: loop.Approval,
+	}
+	runtime.Batch = &delegation.BatchRunner{
+		Runner: runtime.Delegation,
+		Policy: delegationPolicy,
+	}
+
+	jobStore := automation.NewMemoryJobStore()
+	runStore := automation.NewMemoryRunStore()
+	runtime.AutomationJobs = jobStore
+	runtime.AutomationRuns = runStore
+	jobRunner := automation.LoopJobRunner{
+		RunStore: runStore,
+		Events:   events,
+		Factory: func(ctx context.Context, job automation.JobSpec) (func(context.Context, string, string) (string, error), error) {
+			jobCfg := cfg
+			if value := strings.TrimSpace(job.Profile); value != "" {
+				path, err := ResolveProfileArgument(value)
+				if err != nil {
+					return nil, err
+				}
+				if path != "" {
+					jobCfg, err = profile.Load(path)
+					if err != nil {
+						return nil, err
+					}
+				}
+			}
+			jobLoop, err := jobCfg.BuildLoop(profile.BuildOptions{
+				ProviderKind: opts.ProviderKind,
+				BaseURL:      opts.BaseURL,
+				APIKey:       opts.APIKey,
+				Model:        opts.ModelName,
+				WorkDir:      opts.WorkDir,
+			})
+			if err != nil {
+				return nil, err
+			}
+			jobLoop.Approval = loop.Approval
+			return func(callCtx context.Context, sessionKey, prompt string) (string, error) {
+				defer jobLoop.Close()
+				return jobLoop.Process(callCtx, sessionKey, prompt)
+			}, nil
+		},
+	}
+	runtime.Automation = automation.NewMemoryScheduler(jobStore, runStore, jobRunner, events)
+
+	policy := codeexec.DefaultExecutionPolicy{
+		MaxTimeout:     time.Duration(cfg.Orchestration.CodeExec.TimeoutMS) * time.Millisecond,
+		MaxToolCalls:   cfg.Orchestration.CodeExec.MaxToolCalls,
+		MaxStdoutBytes: cfg.Orchestration.CodeExec.MaxStdoutBytes,
+		MaxStderrBytes: cfg.Orchestration.CodeExec.MaxStderrBytes,
+	}
+	runtime.CodeExec = &codeexec.LocalSandbox{
+		Registry: loop.Tools,
+		Policy:   policy,
+		Events:   events,
+	}
+	return runtime, nil
+}
+
+func (r *Runtime) Close() error {
+	if r == nil {
+		return nil
+	}
+	if r.Events != nil {
+		r.Events.Close()
+	}
+	if r.Loop != nil {
+		return r.Loop.Close()
+	}
+	return nil
+}
+
+func buildOptions(opts LoopOptions) profile.BuildOptions {
+	return profile.BuildOptions{
 		ProviderKind: opts.ProviderKind,
 		BaseURL:      opts.BaseURL,
 		APIKey:       opts.APIKey,
 		Model:        opts.ModelName,
 		WorkDir:      opts.WorkDir,
-	})
+	}
+}
+
+func loadConfig(opts LoopOptions) (*profile.Config, error) {
+	cfgPath, err := ResolveProfileArgument(opts.ProfileName)
+	if err != nil {
+		return nil, err
+	}
+	if cfgPath != "" {
+		return profile.Load(cfgPath)
+	}
+
+	if _, err := os.Stat("agent.toml"); err == nil {
+		return profile.Load("agent.toml")
+	}
+
+	return DefaultCLIProfile()
 }
 
 func ResolveProfileArgument(raw string) (string, error) {
@@ -139,5 +271,31 @@ func DefaultCLIProfile() (*profile.Config, error) {
 				MaxBytes:  128 * 1024,
 			},
 		},
+		Orchestration: profile.OrchestrationConfig{
+			Delegation: profile.DelegationConfig{
+				MaxDepth:             2,
+				MaxConcurrent:        2,
+				DefaultMaxIterations: agent.DefaultMaxIterations,
+			},
+			Automation: profile.AutomationConfig{
+				DefaultIntervalMS: int64((5 * time.Minute) / time.Millisecond),
+				DefaultTimeoutMS:  int64((2 * time.Minute) / time.Millisecond),
+			},
+			CodeExec: profile.CodeExecConfig{
+				TimeoutMS:      int64((5 * time.Minute) / time.Millisecond),
+				MaxToolCalls:   50,
+				MaxStdoutBytes: 64 * 1024,
+				MaxStderrBytes: 16 * 1024,
+			},
+		},
 	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
