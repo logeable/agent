@@ -177,12 +177,91 @@ func TestOpenAIResponseModelStreamsContent(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponseModelStreamsContentWhenCompletedOutputIsEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.done\",\"text\":\"hello\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n"))
+	}))
+	defer server.Close()
+
+	model, err := NewOpenAIResponseModel(OpenAIResponseConfig{
+		BaseURL: server.URL,
+		Model:   "demo-model",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIResponseModel() error = %v", err)
+	}
+
+	var chunks []string
+	resp, err := model.ChatStream(
+		context.Background(),
+		[]Message{{Role: "user", Content: "hi"}},
+		nil,
+		"",
+		nil,
+		func(chunk StreamChunk) {
+			chunks = append(chunks, chunk.Delta)
+		},
+	)
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if resp.Content != "hello" {
+		t.Fatalf("content = %q, want hello", resp.Content)
+	}
+	if resp.Usage == nil || resp.Usage.TotalTokens != 5 {
+		t.Fatalf("usage = %#v, want total_tokens=5", resp.Usage)
+	}
+	if len(chunks) != 1 || chunks[0] != "hel" {
+		t.Fatalf("chunks = %#v, want [hel]", chunks)
+	}
+}
+
+func TestOpenAIResponseModelStreamsContentFromOutputItemDone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello from item\"}]}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":4,\"total_tokens\":7}}}\n\n"))
+	}))
+	defer server.Close()
+
+	model, err := NewOpenAIResponseModel(OpenAIResponseConfig{
+		BaseURL: server.URL,
+		Model:   "demo-model",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIResponseModel() error = %v", err)
+	}
+
+	resp, err := model.ChatStream(
+		context.Background(),
+		[]Message{{Role: "user", Content: "hi"}},
+		nil,
+		"",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if resp.Content != "hello from item" {
+		t.Fatalf("content = %q, want hello from item", resp.Content)
+	}
+	if resp.Usage == nil || resp.Usage.TotalTokens != 7 {
+		t.Fatalf("usage = %#v, want total_tokens=7", resp.Usage)
+	}
+}
+
 func TestOpenAIResponseModelStreamsToolCalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"call-1\",\"name\":\"echo\",\"delta\":\"{\\\"text\\\":\\\"he\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"echo\",\"arguments\":\"\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_1\",\"delta\":\"{\\\"text\\\":\\\"he\"}\n\n"))
 		_, _ = w.Write([]byte("data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"llo\\\"}\"}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"item_id\":\"call-1\",\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\\\"hello\\\"}\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"item_id\":\"fc_1\",\"arguments\":\"{\\\"text\\\":\\\"hello\\\"}\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\\\"hello\\\"}\"}}\n\n"))
 	}))
 	defer server.Close()
 
@@ -208,11 +287,59 @@ func TestOpenAIResponseModelStreamsToolCalls(t *testing.T) {
 	if len(resp.ToolCalls) != 1 {
 		t.Fatalf("tool call count = %d, want 1", len(resp.ToolCalls))
 	}
+	if resp.ToolCalls[0].ID != "call-1" {
+		t.Fatalf("tool call id = %q, want call-1", resp.ToolCalls[0].ID)
+	}
 	if resp.ToolCalls[0].Name != "echo" {
 		t.Fatalf("tool name = %q, want echo", resp.ToolCalls[0].Name)
 	}
 	if got := resp.ToolCalls[0].Arguments["text"]; got != "hello" {
 		t.Fatalf("tool args text = %v, want hello", got)
+	}
+}
+
+func TestOpenAIResponseModelStreamsToolCallsWithSparseOutputIndex(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"bash\",\"arguments\":\"\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":1,\"item_id\":\"fc_1\",\"arguments\":\"{\\\"command\\\":\\\"pwd\\\"}\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"pwd\\\"}\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n"))
+	}))
+	defer server.Close()
+
+	model, err := NewOpenAIResponseModel(OpenAIResponseConfig{
+		BaseURL: server.URL,
+		Model:   "demo-model",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIResponseModel() error = %v", err)
+	}
+
+	resp, err := model.ChatStream(
+		context.Background(),
+		[]Message{{Role: "user", Content: "hi"}},
+		nil,
+		"",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("tool call count = %d, want 1", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].ID != "call-1" {
+		t.Fatalf("tool call id = %q, want call-1", resp.ToolCalls[0].ID)
+	}
+	if resp.ToolCalls[0].Name != "bash" {
+		t.Fatalf("tool name = %q, want bash", resp.ToolCalls[0].Name)
+	}
+	if got := resp.ToolCalls[0].Arguments["command"]; got != "pwd" {
+		t.Fatalf("tool args command = %v, want pwd", got)
 	}
 }
 

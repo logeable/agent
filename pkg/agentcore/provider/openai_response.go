@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -108,6 +111,11 @@ func (m *OpenAIResponseModel) Chat(
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+	dump, err := newResponsesDebugDump(false, payload)
+	if err != nil {
+		return nil, err
+	}
+	defer dump.close()
 
 	resp, endpoint, err := m.postResponses(ctx, payload, false)
 	if err != nil {
@@ -117,11 +125,18 @@ func (m *OpenAIResponseModel) Chat(
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
+		dump.writeResponse(body)
 		return nil, classifyHTTPError(fmt.Sprintf("provider error at %s", endpoint), resp.StatusCode, string(body), resp.Header)
 	}
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	dump.writeResponse(body)
+
 	var decoded openAIResponseEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+	if err := json.Unmarshal(body, &decoded); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return parseOpenAIResponse(&decoded), nil
@@ -169,6 +184,11 @@ func (m *OpenAIResponseModel) ChatStream(
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+	dump, err := newResponsesDebugDump(true, payload)
+	if err != nil {
+		return nil, err
+	}
+	defer dump.close()
 
 	resp, endpoint, err := m.postResponses(ctx, payload, true)
 	if err != nil {
@@ -178,10 +198,11 @@ func (m *OpenAIResponseModel) ChatStream(
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
+		dump.writeResponse(body)
 		return nil, classifyHTTPError(fmt.Sprintf("provider error at %s", endpoint), resp.StatusCode, string(body), resp.Header)
 	}
 
-	return parseOpenAIResponseStream(resp.Body, onChunk)
+	return parseOpenAIResponseStream(dump.wrapResponseBody(resp.Body), onChunk)
 }
 
 // postResponses sends one Responses API request to the endpoint implied by the
@@ -311,12 +332,30 @@ type openAIResponseEnvelope struct {
 type openAIResponseStreamEvent struct {
 	Type        string                  `json:"type"`
 	Delta       string                  `json:"delta"`
+	Text        string                  `json:"text"`
 	ItemID      string                  `json:"item_id"`
 	OutputIndex int                     `json:"output_index"`
 	Name        string                  `json:"name"`
+	CallID      string                  `json:"call_id"`
 	Arguments   string                  `json:"arguments"`
 	Error       *openAIResponseError    `json:"error"`
 	Response    *openAIResponseEnvelope `json:"response"`
+	Item        *openAIResponseOutput   `json:"item"`
+	Part        *openAIResponseContent  `json:"part"`
+}
+
+type openAIResponseOutput struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	Content   []openAIResponseContent `json:"content"`
+}
+
+type openAIResponseContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 type openAIResponseError struct {
@@ -450,6 +489,14 @@ func parseOpenAIResponse(resp *openAIResponseEnvelope) *Response {
 	return out
 }
 
+func appendOutputText(dst *strings.Builder, content []openAIResponseContent) {
+	for _, block := range content {
+		if block.Type == "output_text" || block.Type == "text" {
+			dst.WriteString(block.Text)
+		}
+	}
+}
+
 func parseOpenAIResponseStream(reader io.Reader, onChunk func(StreamChunk)) (*Response, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -457,13 +504,40 @@ func parseOpenAIResponseStream(reader io.Reader, onChunk func(StreamChunk)) (*Re
 	var dataLines []string
 	var accumulated strings.Builder
 	var reasoning strings.Builder
+	debugResponsesStream := os.Getenv("AGENT_DEBUG_RESPONSES_STREAM") == "1"
 	type toolAssembly struct {
 		itemID    string
+		callID    string
 		name      string
 		arguments strings.Builder
 	}
 	toolCalls := make(map[int]*toolAssembly)
 	var completed *Response
+	finalizeToolCalls := func(out *Response) error {
+		indexes := make([]int, 0, len(toolCalls))
+		for idx := range toolCalls {
+			indexes = append(indexes, idx)
+		}
+		sort.Ints(indexes)
+		for _, idx := range indexes {
+			item := toolCalls[idx]
+			if item == nil {
+				continue
+			}
+			args := map[string]any{}
+			if raw := strings.TrimSpace(item.arguments.String()); raw != "" {
+				if err := json.Unmarshal([]byte(raw), &args); err != nil {
+					return fmt.Errorf("decode streamed tool arguments for %q: %w", item.name, err)
+				}
+			}
+			out.ToolCalls = append(out.ToolCalls, ToolCall{
+				ID:        item.callID,
+				Name:      item.name,
+				Arguments: args,
+			})
+		}
+		return nil
+	}
 
 	flush := func() error {
 		if len(dataLines) == 0 {
@@ -480,6 +554,9 @@ func parseOpenAIResponseStream(reader io.Reader, onChunk func(StreamChunk)) (*Re
 		if err := json.Unmarshal([]byte(payload), &evt); err != nil {
 			return fmt.Errorf("decode stream event: %w", err)
 		}
+		if debugResponsesStream {
+			debugLogOpenAIResponseStreamEvent(evt)
+		}
 
 		switch evt.Type {
 		case "response.output_text.delta":
@@ -489,6 +566,30 @@ func parseOpenAIResponseStream(reader io.Reader, onChunk func(StreamChunk)) (*Re
 					onChunk(StreamChunk{
 						Kind:        StreamChunkKindOutputText,
 						Delta:       evt.Delta,
+						Accumulated: accumulated.String(),
+					})
+				}
+			}
+		case "response.output_text.done":
+			if evt.Text != "" && len(evt.Text) > accumulated.Len() {
+				hadDelta := accumulated.Len() > 0
+				accumulated.Reset()
+				accumulated.WriteString(evt.Text)
+				if onChunk != nil && !hadDelta {
+					onChunk(StreamChunk{
+						Kind:        StreamChunkKindOutputText,
+						Delta:       evt.Text,
+						Accumulated: accumulated.String(),
+					})
+				}
+			}
+		case "response.content_part.done":
+			if evt.Part != nil && (evt.Part.Type == "output_text" || evt.Part.Type == "text") && evt.Part.Text != "" && accumulated.Len() == 0 {
+				accumulated.WriteString(evt.Part.Text)
+				if onChunk != nil {
+					onChunk(StreamChunk{
+						Kind:        StreamChunkKindOutputText,
+						Delta:       evt.Part.Text,
 						Accumulated: accumulated.String(),
 					})
 				}
@@ -516,6 +617,9 @@ func parseOpenAIResponseStream(reader io.Reader, onChunk func(StreamChunk)) (*Re
 			if evt.Name != "" {
 				item.name = evt.Name
 			}
+			if evt.CallID != "" {
+				item.callID = evt.CallID
+			}
 			if evt.Delta != "" {
 				item.arguments.WriteString(evt.Delta)
 			}
@@ -531,13 +635,53 @@ func parseOpenAIResponseStream(reader io.Reader, onChunk func(StreamChunk)) (*Re
 			if evt.Name != "" {
 				item.name = evt.Name
 			}
+			if evt.CallID != "" {
+				item.callID = evt.CallID
+			}
 			if evt.Arguments != "" {
 				item.arguments.Reset()
 				item.arguments.WriteString(evt.Arguments)
 			}
+		case "response.output_item.added", "response.output_item.done":
+			if evt.Item == nil {
+				break
+			}
+			switch evt.Item.Type {
+			case "function_call":
+				item := toolCalls[evt.OutputIndex]
+				if item == nil {
+					item = &toolAssembly{}
+					toolCalls[evt.OutputIndex] = item
+				}
+				if evt.Item.ID != "" {
+					item.itemID = evt.Item.ID
+				}
+				if evt.Item.CallID != "" {
+					item.callID = evt.Item.CallID
+				}
+				if evt.Item.Name != "" {
+					item.name = evt.Item.Name
+				}
+				if evt.Item.Arguments != "" {
+					item.arguments.Reset()
+					item.arguments.WriteString(evt.Item.Arguments)
+				}
+			case "message":
+				if accumulated.Len() == 0 {
+					appendOutputText(&accumulated, evt.Item.Content)
+				}
+			}
 		case "response.completed":
 			if evt.Response != nil {
 				completed = parseOpenAIResponse(evt.Response)
+				if completed.Content == "" && accumulated.Len() > 0 {
+					completed.Content = accumulated.String()
+				}
+				if len(completed.ToolCalls) == 0 {
+					if err := finalizeToolCalls(completed); err != nil {
+						return err
+					}
+				}
 			}
 		case "error":
 			if evt.Error != nil && strings.TrimSpace(evt.Error.Message) != "" {
@@ -572,24 +716,131 @@ func parseOpenAIResponseStream(reader io.Reader, onChunk func(StreamChunk)) (*Re
 	}
 
 	out := &Response{Content: accumulated.String()}
-	for idx := 0; idx < len(toolCalls); idx++ {
-		item := toolCalls[idx]
-		if item == nil {
-			continue
-		}
-		args := map[string]any{}
-		if raw := strings.TrimSpace(item.arguments.String()); raw != "" {
-			if err := json.Unmarshal([]byte(raw), &args); err != nil {
-				return nil, fmt.Errorf("decode streamed tool arguments for %q: %w", item.name, err)
-			}
-		}
-		out.ToolCalls = append(out.ToolCalls, ToolCall{
-			ID:        item.itemID,
-			Name:      item.name,
-			Arguments: args,
-		})
+	if err := finalizeToolCalls(out); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+func debugLogOpenAIResponseStreamEvent(evt openAIResponseStreamEvent) {
+	parts := []string{fmt.Sprintf("type=%s", evt.Type)}
+	if evt.OutputIndex != 0 {
+		parts = append(parts, fmt.Sprintf("output_index=%d", evt.OutputIndex))
+	}
+	if evt.ItemID != "" {
+		parts = append(parts, fmt.Sprintf("item_id=%q", evt.ItemID))
+	}
+	if evt.CallID != "" {
+		parts = append(parts, fmt.Sprintf("call_id=%q", evt.CallID))
+	}
+	if evt.Name != "" {
+		parts = append(parts, fmt.Sprintf("name=%q", evt.Name))
+	}
+	if evt.Delta != "" {
+		parts = append(parts, fmt.Sprintf("delta_len=%d", len(evt.Delta)))
+	}
+	if evt.Text != "" {
+		parts = append(parts, fmt.Sprintf("text_len=%d", len(evt.Text)))
+	}
+	if evt.Arguments != "" {
+		parts = append(parts, fmt.Sprintf("arguments_len=%d", len(evt.Arguments)))
+	}
+	if evt.Item != nil {
+		parts = append(parts, fmt.Sprintf("item.type=%q", evt.Item.Type))
+		if evt.Item.ID != "" {
+			parts = append(parts, fmt.Sprintf("item.id=%q", evt.Item.ID))
+		}
+		if evt.Item.CallID != "" {
+			parts = append(parts, fmt.Sprintf("item.call_id=%q", evt.Item.CallID))
+		}
+		if evt.Item.Name != "" {
+			parts = append(parts, fmt.Sprintf("item.name=%q", evt.Item.Name))
+		}
+		if len(evt.Item.Content) > 0 {
+			parts = append(parts, fmt.Sprintf("item.content_blocks=%d", len(evt.Item.Content)))
+		}
+		if evt.Item.Arguments != "" {
+			parts = append(parts, fmt.Sprintf("item.arguments_len=%d", len(evt.Item.Arguments)))
+		}
+	}
+	if evt.Part != nil {
+		parts = append(parts, fmt.Sprintf("part.type=%q", evt.Part.Type))
+		if evt.Part.Text != "" {
+			parts = append(parts, fmt.Sprintf("part.text_len=%d", len(evt.Part.Text)))
+		}
+	}
+	if evt.Response != nil {
+		parts = append(parts, fmt.Sprintf("response.output_len=%d", len(evt.Response.Output)))
+		if evt.Response.Usage != nil {
+			parts = append(parts, fmt.Sprintf("response.total_tokens=%d", evt.Response.Usage.TotalTokens))
+		}
+	}
+	fmt.Fprintf(os.Stderr, "[openai_response_stream] %s\n", strings.Join(parts, " "))
+}
+
+type responsesDebugDump struct {
+	requestPath  string
+	responsePath string
+	responseFile *os.File
+}
+
+func newResponsesDebugDump(stream bool, request []byte) (*responsesDebugDump, error) {
+	if os.Getenv("AGENT_DEBUG_RESPONSES_DUMP") != "1" {
+		return &responsesDebugDump{}, nil
+	}
+
+	dir := strings.TrimSpace(os.Getenv("AGENT_DEBUG_RESPONSES_DUMP_DIR"))
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create responses debug dump dir: %w", err)
+	}
+
+	stem := fmt.Sprintf("agent-openai-response-%d", time.Now().UnixNano())
+	mode := "json"
+	if stream {
+		mode = "sse"
+	}
+
+	requestPath := filepath.Join(dir, stem+".request.json")
+	if err := os.WriteFile(requestPath, request, 0o644); err != nil {
+		return nil, fmt.Errorf("write responses request dump: %w", err)
+	}
+
+	responsePath := filepath.Join(dir, stem+".response."+mode)
+	responseFile, err := os.Create(responsePath)
+	if err != nil {
+		return nil, fmt.Errorf("create responses response dump: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "[openai_response_dump] request=%s response=%s\n", requestPath, responsePath)
+	return &responsesDebugDump{
+		requestPath:  requestPath,
+		responsePath: responsePath,
+		responseFile: responseFile,
+	}, nil
+}
+
+func (d *responsesDebugDump) wrapResponseBody(body io.Reader) io.Reader {
+	if d == nil || d.responseFile == nil {
+		return body
+	}
+	return io.TeeReader(body, d.responseFile)
+}
+
+func (d *responsesDebugDump) writeResponse(body []byte) {
+	if d == nil || d.responseFile == nil {
+		return
+	}
+	_, _ = d.responseFile.Write(body)
+}
+
+func (d *responsesDebugDump) close() {
+	if d == nil || d.responseFile == nil {
+		return
+	}
+	_ = d.responseFile.Close()
 }
 
 func responsesUsage(value *openAIResponseUsage) *Usage {
