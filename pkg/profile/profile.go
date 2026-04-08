@@ -29,34 +29,6 @@ const (
 	defaultMCPResponseChars            = 8 * 1024
 )
 
-// BuildDefaultIdentity returns the default identity block for an agent profile.
-//
-// Why:
-// Identity answers "what kind of agent is this?" and should remain stable
-// across many tasks. It is different from the deeper behavioral rules in Soul.
-func BuildDefaultIdentity() string {
-	return strings.TrimSpace(`
-You are a general-purpose local agent.
-You operate in the current environment and use available tools to help complete user requests.
-`)
-}
-
-// BuildDefaultSoul returns the default behavioral rules for an agent profile.
-//
-// Why:
-// Soul captures the durable working method of the agent: how it should inspect,
-// decide, act, and report. Keeping this separate from Identity makes the prompt
-// easier to reason about and easier to override intentionally.
-func BuildDefaultSoul() string {
-	return strings.TrimSpace(`
-Understand the current state before acting.
-Use tools to inspect facts instead of guessing.
-Take the smallest action that makes real progress.
-Do not repeat tool calls without new information.
-Report failures clearly and stay concise.
-`)
-}
-
 // EnvironmentInfo carries the minimum runtime facts that should be surfaced in
 // the generated system prompt.
 //
@@ -70,64 +42,6 @@ type EnvironmentInfo struct {
 	FileRoots     []string
 	EnabledTools  []string
 	MaxIterations int
-}
-
-// BuildSystemPrompt composes the final system prompt from identity, soul, and
-// the current runtime environment.
-//
-// Why:
-// This keeps prompt construction explicit and layered. Identity and Soul come
-// from the profile, while Environment comes from the actual instantiated agent.
-func BuildSystemPrompt(identity, soul string, env EnvironmentInfo, skillsSummary string) string {
-	identity = strings.TrimSpace(identity)
-	if identity == "" {
-		identity = BuildDefaultIdentity()
-	}
-
-	soul = strings.TrimSpace(soul)
-	if soul == "" {
-		soul = BuildDefaultSoul()
-	}
-
-	scope := strings.TrimSpace(env.FilesScope)
-	if scope == "" {
-		scope = string(builtintools.PathScopeWorkspace)
-	}
-
-	enabledTools := "none"
-	if len(env.EnabledTools) > 0 {
-		enabledTools = strings.Join(env.EnabledTools, ", ")
-	}
-
-	fileRoots := "current working directory"
-	if len(env.FileRoots) > 0 {
-		fileRoots = strings.Join(env.FileRoots, ", ")
-	}
-
-	maxIterations := env.MaxIterations
-	if maxIterations <= 0 {
-		maxIterations = agent.DefaultMaxIterations
-	}
-
-	environment := strings.TrimSpace(fmt.Sprintf(`
-# Environment
-Current working directory: %s
-File access scope: %s
-Allowed file roots: %s
-Enabled tools: %s
-Max tool-call iterations per turn: %d
-`, env.WorkDir, scope, fileRoots, enabledTools, maxIterations))
-
-	parts := []string{
-		"# Identity\n" + identity,
-		"# Soul\n" + soul,
-	}
-	if strings.TrimSpace(skillsSummary) != "" {
-		parts = append(parts, skillsSummary)
-	}
-	parts = append(parts, environment)
-
-	return strings.Join(parts, "\n\n---\n\n")
 }
 
 // Config is the top-level profile document.
@@ -147,6 +61,7 @@ type Config struct {
 	Skills        SkillsConfig        `toml:"skills"`
 	MCP           mcpbridge.Config    `toml:"mcp"`
 	Tools         ToolsConfig         `toml:"tools"`
+	Prompt        PromptConfig        `toml:"prompt"`
 	Orchestration OrchestrationConfig `toml:"orchestration"`
 
 	sourcePath string
@@ -400,7 +315,12 @@ func (c *Config) BuildLoop(opts BuildOptions) (*agent.Loop, error) {
 		FileRoots:     append([]string(nil), pathPolicy.Roots...),
 		EnabledTools:  c.enabledTools(),
 		MaxIterations: c.Agent.MaxIterations,
-	}, skillsSummary)
+	}, skillsSummary, CapabilityGuidanceOptions{
+		Skills:     strings.TrimSpace(skillsSummary) != "",
+		Delegation: c.Orchestration.Delegation.Enabled,
+		Automation: c.Orchestration.Automation.Enabled,
+		CodeExec:   c.Orchestration.CodeExec.Enabled,
+	}, c.Prompt)
 
 	loop := &agent.Loop{
 		Model:         model,

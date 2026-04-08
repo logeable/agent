@@ -44,4 +44,10 @@ timeout_ms = 1000
 	if runtime.Loop == nil || runtime.Events == nil || runtime.Delegation == nil || runtime.Automation == nil || runtime.CodeExec == nil {
 		t.Fatalf("runtime = %+v, want all modules wired", runtime)
 	}
+	if runtime.CodeExecPrompt == "" {
+		t.Fatal("CodeExecPrompt = empty, want prompt guidance")
+	}
+	if runtime.Automation == nil {
+		t.Fatal("Automation = nil")
+	}
 }

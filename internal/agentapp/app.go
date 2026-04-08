@@ -35,6 +35,7 @@ type Runtime struct {
 	AutomationJobs *automation.MemoryJobStore
 	AutomationRuns *automation.MemoryRunStore
 	CodeExec       *codeexec.LocalSandbox
+	CodeExecPrompt string
 }
 
 func BuildLoop(opts LoopOptions) (*agent.Loop, error) {
@@ -84,6 +85,12 @@ func BuildRuntime(opts LoopOptions) (*Runtime, error) {
 		if err != nil {
 			return nil, err
 		}
+		childPrompt := profile.BuildDelegationPrompt(profile.DelegationPromptInput{
+			Goal:           spec.Goal,
+			ContextSummary: spec.ContextSummary,
+			WorkDir:        childOpts.WorkDir,
+		})
+		childLoop.Context.SystemPrompt = strings.TrimSpace(childLoop.Context.SystemPrompt + "\n\n---\n\n" + childPrompt)
 		childLoop.Approval = loop.Approval
 		return childLoop, nil
 	}
@@ -136,9 +143,12 @@ func BuildRuntime(opts LoopOptions) (*Runtime, error) {
 				return nil, err
 			}
 			jobLoop.Approval = loop.Approval
+			wrappedPrompt := profile.BuildAutomationPrompt(profile.AutomationPromptInput{
+				Task: job.Prompt,
+			})
 			return func(callCtx context.Context, sessionKey, prompt string) (string, error) {
 				defer jobLoop.Close()
-				return jobLoop.Process(callCtx, sessionKey, prompt)
+				return jobLoop.Process(callCtx, sessionKey, wrappedPrompt)
 			}, nil
 		},
 	}
@@ -155,6 +165,9 @@ func BuildRuntime(opts LoopOptions) (*Runtime, error) {
 		Policy:   policy,
 		Events:   events,
 	}
+	runtime.CodeExecPrompt = profile.BuildCodeExecPrompt(profile.CodeExecPromptInput{
+		AllowedTools: codeexec.AllowedToolNames(loop.Tools),
+	})
 	return runtime, nil
 }
 

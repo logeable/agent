@@ -92,6 +92,9 @@ max_bytes = 8192
 	if !strings.Contains(loop.Context.SystemPrompt, "Prefer inspection before changes.") {
 		t.Fatalf("SystemPrompt missing soul, got %q", loop.Context.SystemPrompt)
 	}
+	if !strings.Contains(loop.Context.SystemPrompt, "# Execution Guidance") {
+		t.Fatalf("SystemPrompt missing execution guidance, got %q", loop.Context.SystemPrompt)
+	}
 	if !strings.Contains(loop.Context.SystemPrompt, "# Environment") {
 		t.Fatalf("SystemPrompt missing environment section, got %q", loop.Context.SystemPrompt)
 	}
@@ -120,7 +123,7 @@ func TestBuildSystemPromptUsesDefaults(t *testing.T) {
 		WorkDir:      "/tmp/project",
 		FilesScope:   "workspace",
 		EnabledTools: []string{"read_file", "bash"},
-	}, "")
+	}, "", CapabilityGuidanceOptions{}, PromptConfig{})
 
 	if !strings.Contains(prompt, "# Identity") {
 		t.Fatalf("prompt missing identity section: %q", prompt)
@@ -128,8 +131,83 @@ func TestBuildSystemPromptUsesDefaults(t *testing.T) {
 	if !strings.Contains(prompt, "# Soul") {
 		t.Fatalf("prompt missing soul section: %q", prompt)
 	}
+	if !strings.Contains(prompt, "# Execution Guidance") {
+		t.Fatalf("prompt missing execution guidance section: %q", prompt)
+	}
 	if !strings.Contains(prompt, "/tmp/project") {
 		t.Fatalf("prompt missing workdir: %q", prompt)
+	}
+}
+
+func TestBuildSystemPromptIncludesCapabilityGuidanceWhenEnabled(t *testing.T) {
+	prompt := BuildSystemPrompt("identity", "soul", EnvironmentInfo{
+		WorkDir:      "/tmp/project",
+		FilesScope:   "workspace",
+		EnabledTools: []string{"read_file"},
+	}, "", CapabilityGuidanceOptions{
+		Skills:     true,
+		Delegation: true,
+		Automation: true,
+		CodeExec:   true,
+	}, PromptConfig{})
+
+	if !strings.Contains(prompt, "# Capability Guidance") {
+		t.Fatalf("prompt missing capability guidance: %q", prompt)
+	}
+	if !strings.Contains(prompt, "delegation only when a task can be cleanly isolated") {
+		t.Fatalf("prompt missing delegation guidance: %q", prompt)
+	}
+}
+
+func TestBuildDelegationPromptIsTaskScoped(t *testing.T) {
+	prompt := BuildDelegationPrompt(DelegationPromptInput{
+		Goal:           "Inspect the failing tests",
+		ContextSummary: "The parent already identified the failing package.",
+		WorkDir:        "/tmp/project",
+	})
+	if !strings.Contains(prompt, "focused child worker") {
+		t.Fatalf("delegation prompt missing child role: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Do not return your full execution trace") {
+		t.Fatalf("delegation prompt missing summary-only rule: %q", prompt)
+	}
+}
+
+func TestBuildAutomationPromptWrapsTask(t *testing.T) {
+	prompt := BuildAutomationPrompt(AutomationPromptInput{Task: "Collect the nightly report."})
+	if !strings.Contains(prompt, "fresh session") {
+		t.Fatalf("automation prompt missing fresh-session rule: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Do not create or schedule additional automation jobs") {
+		t.Fatalf("automation prompt missing recursion rule: %q", prompt)
+	}
+}
+
+func TestBuildCodeExecPromptListsAllowedTools(t *testing.T) {
+	prompt := BuildCodeExecPrompt(CodeExecPromptInput{AllowedTools: []string{"read_file", "bash"}})
+	if !strings.Contains(prompt, "read_file, bash") {
+		t.Fatalf("codeexec prompt missing allowed tools: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Do not invoke delegation, automation, or nested code execution") {
+		t.Fatalf("codeexec prompt missing recursion rule: %q", prompt)
+	}
+}
+
+func TestBuildSystemPromptCanDisableGuidance(t *testing.T) {
+	disabled := false
+	prompt := BuildSystemPrompt("identity", "soul", EnvironmentInfo{
+		WorkDir: "/tmp/project",
+	}, "", CapabilityGuidanceOptions{
+		Delegation: true,
+	}, PromptConfig{
+		EnableExecutionGuidance: &disabled,
+		EnableScenarioGuidance:  &disabled,
+	})
+	if strings.Contains(prompt, "# Execution Guidance") {
+		t.Fatalf("prompt unexpectedly contains execution guidance: %q", prompt)
+	}
+	if strings.Contains(prompt, "# Capability Guidance") {
+		t.Fatalf("prompt unexpectedly contains capability guidance: %q", prompt)
 	}
 }
 
