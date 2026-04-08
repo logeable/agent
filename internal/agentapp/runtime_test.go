@@ -1,9 +1,12 @@
 package agentapp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/logeable/agent/pkg/delegation"
 )
 
 func TestBuildRuntimeWiresOrchestrationModules(t *testing.T) {
@@ -17,9 +20,10 @@ kind = "ollama"
 model = "tiny"
 
 [tools]
-enabled = ["read_file"]
+enabled = ["read_file", "delegate_task"]
 
 [orchestration.delegation]
+enabled = true
 max_depth = 2
 
 [orchestration.automation]
@@ -49,5 +53,16 @@ timeout_ms = 1000
 	}
 	if runtime.Automation == nil {
 		t.Fatal("Automation = nil")
+	}
+	if _, ok := runtime.Loop.Tools.Get("delegate_task"); !ok {
+		t.Fatal("main runtime loop missing delegate_task tool")
+	}
+	childLoop, err := runtime.Delegation.Factory(context.Background(), delegation.ChildSpec{Goal: "inspect", Depth: 1})
+	if err != nil {
+		t.Fatalf("child factory error = %v", err)
+	}
+	defer childLoop.Close()
+	if _, ok := childLoop.Tools.Get("delegate_task"); ok {
+		t.Fatal("child loop unexpectedly includes delegate_task")
 	}
 }

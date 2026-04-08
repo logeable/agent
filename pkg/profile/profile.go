@@ -458,6 +458,9 @@ func (c *Config) buildRegistry(
 				MaxBytes:  positiveInt64OrDefault(c.Tools.WebFetch.MaxBytes, defaultWebFetchMaxBytes),
 				UserAgent: strings.TrimSpace(c.Tools.WebFetch.UserAgent),
 			})
+		case "delegate_task":
+			// Registered by BuildRuntime when delegation orchestration is enabled.
+			continue
 		default:
 			return nil, nil, fmt.Errorf("unsupported tool %q", name)
 		}
@@ -719,7 +722,7 @@ func (c *Config) expandPath(value string) (string, error) {
 
 func isSupportedTool(name string) bool {
 	switch name {
-	case "read_file", "edit_file", "write_file", "bash", "web_fetch":
+	case "read_file", "edit_file", "write_file", "bash", "web_fetch", "delegate_task":
 		return true
 	default:
 		return false

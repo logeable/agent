@@ -10,29 +10,33 @@ import (
 	"github.com/logeable/agent/internal/agentclirender"
 	"github.com/logeable/agent/pkg/agentcore/agent"
 	"github.com/logeable/agent/pkg/agentcore/tooling"
+	"github.com/logeable/agent/pkg/orchestration"
 	"golang.org/x/term"
 )
 
 // SingleRunOptions controls the non-interactive one-shot execution path.
 type SingleRunOptions struct {
-	SessionKey     string
-	Message        string
-	Stream         bool
-	ShowReasoning  bool
-	ShowEvents     bool
-	AutoApprove    bool
-	RenderMarkdown bool
+	SessionKey              string
+	Message                 string
+	Stream                  bool
+	ShowReasoning           bool
+	ShowEvents              bool
+	ShowOrchestrationEvents bool
+	AutoApprove             bool
+	RenderMarkdown          bool
 }
 
 // RunSingleMessage executes one user message and prints its output directly to
 // the terminal. It returns a process-style exit code plus any terminal-visible
 // error that should be reported by the caller.
-func RunSingleMessage(loop *agent.Loop, opts SingleRunOptions) (int, error) {
+func RunSingleMessage(loop *agent.Loop, orchestrationEvents *orchestration.EventBus, opts SingleRunOptions) (int, error) {
 	loop.Approval = BuildCLIApprovalHandler(opts.AutoApprove)
 
 	stopStreaming := startStreamingPrinter(loop.Events, opts.Stream, opts.ShowReasoning)
 	stopEvents := startEventPrinter(loop.Events, opts.ShowEvents)
+	stopOrchestrationEvents := startOrchestrationEventPrinter(orchestrationEvents, opts.ShowOrchestrationEvents)
 	defer stopEvents()
+	defer stopOrchestrationEvents()
 
 	resp, err := loop.Process(context.Background(), opts.SessionKey, opts.Message)
 	if err != nil {

@@ -154,7 +154,7 @@ func TestBuildSystemPromptIncludesCapabilityGuidanceWhenEnabled(t *testing.T) {
 	if !strings.Contains(prompt, "# Capability Guidance") {
 		t.Fatalf("prompt missing capability guidance: %q", prompt)
 	}
-	if !strings.Contains(prompt, "delegation only when a task can be cleanly isolated") {
+	if !strings.Contains(prompt, "Use delegate_task only for isolated reasoning-heavy subtasks") {
 		t.Fatalf("prompt missing delegation guidance: %q", prompt)
 	}
 }

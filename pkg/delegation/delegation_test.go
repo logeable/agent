@@ -2,6 +2,7 @@ package delegation
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -181,6 +182,106 @@ func TestLoopChildRunnerPropagatesCancellation(t *testing.T) {
 	_, err := runner.Run(ctx, ChildSpec{Goal: "wait"})
 	if err == nil {
 		t.Fatal("Run() error = nil, want cancellation")
+	}
+}
+
+func TestDelegationToolSingleTask(t *testing.T) {
+	tool := Tool{
+		Runner: childRunnerFunc(func(ctx context.Context, spec ChildSpec) (ChildResult, error) {
+			return ChildResult{Summary: "done", OutputFiles: []string{"a.txt"}, Iterations: 3}, nil
+		}),
+		MaxConcurrent: 3,
+		DefaultDepth:  1,
+	}
+
+	result := tool.Execute(context.Background(), map[string]any{
+		"goal":    "inspect",
+		"context": "use path repo",
+	})
+	if result == nil || result.IsError {
+		t.Fatalf("Execute() result = %+v, want success", result)
+	}
+	var payload []map[string]any
+	if err := json.Unmarshal([]byte(result.ForModel), &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(payload) != 1 || payload[0]["summary"] != "done" {
+		t.Fatalf("payload = %#v, want one summary", payload)
+	}
+}
+
+func TestDelegationToolBatchTask(t *testing.T) {
+	tool := Tool{
+		Runner: childRunnerFunc(func(ctx context.Context, spec ChildSpec) (ChildResult, error) {
+			return ChildResult{Summary: spec.Goal}, nil
+		}),
+		Batch: &BatchRunner{
+			Runner: childRunnerFunc(func(ctx context.Context, spec ChildSpec) (ChildResult, error) {
+				return ChildResult{Summary: spec.Goal}, nil
+			}),
+			Policy: DefaultPolicy{},
+		},
+		MaxConcurrent: 3,
+		DefaultDepth:  1,
+	}
+
+	result := tool.Execute(context.Background(), map[string]any{
+		"tasks": []any{
+			map[string]any{"goal": "a", "read_only": true},
+			map[string]any{"goal": "b", "read_only": true},
+		},
+	})
+	if result == nil || result.IsError {
+		t.Fatalf("Execute() result = %+v, want success", result)
+	}
+	var payload []map[string]any
+	if err := json.Unmarshal([]byte(result.ForModel), &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(payload) != 2 {
+		t.Fatalf("payload len = %d, want 2", len(payload))
+	}
+}
+
+func TestTruncateDelegationCallsCapsChildrenAcrossCalls(t *testing.T) {
+	calls := []provider.ToolCall{
+		{
+			ID:   "1",
+			Name: "delegate_task",
+			Arguments: map[string]any{
+				"tasks": []any{
+					map[string]any{"goal": "a"},
+					map[string]any{"goal": "b"},
+				},
+			},
+		},
+		{
+			ID:   "2",
+			Name: "delegate_task",
+			Arguments: map[string]any{
+				"tasks": []any{
+					map[string]any{"goal": "c"},
+					map[string]any{"goal": "d"},
+				},
+			},
+		},
+		{
+			ID:        "3",
+			Name:      "read_file",
+			Arguments: map[string]any{"path": "go.mod"},
+		},
+	}
+
+	got := TruncateDelegationCalls(calls, 3)
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3", len(got))
+	}
+	secondTasks, _ := got[1].Arguments["tasks"].([]any)
+	if len(secondTasks) != 1 {
+		t.Fatalf("trimmed second task count = %d, want 1", len(secondTasks))
+	}
+	if got[2].Name != "read_file" {
+		t.Fatalf("non-delegate call was removed: %#v", got[2])
 	}
 }
 

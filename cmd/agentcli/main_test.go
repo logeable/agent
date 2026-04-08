@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -49,5 +50,39 @@ func TestResolveProfileArgumentWithHomeAcceptsTomlName(t *testing.T) {
 	got := resolveProfileArgumentWithHome("work.toml", homeDir)
 	if got != namedProfile {
 		t.Fatalf("expected named profile %q, got %q", namedProfile, got)
+	}
+}
+
+func TestBuildDelegationHintMessage(t *testing.T) {
+	got := buildDelegationHintMessage("")
+	if got == "" {
+		t.Fatal("buildDelegationHintMessage() = empty")
+	}
+	if want := "Delegation hint"; got[:len(want)] != want {
+		t.Fatalf("hint prompt prefix = %q, want %q", got[:len(want)], want)
+	}
+}
+
+func TestBuildDelegationHintMessageAppendsBase(t *testing.T) {
+	got := buildDelegationHintMessage("Base instruction.")
+	if got == "" || got == "Base instruction." {
+		t.Fatalf("buildDelegationHintMessage() = %q, want appended hint prompt", got)
+	}
+}
+
+func TestBuildDelegationRequiredPrompt(t *testing.T) {
+	got := buildDelegationRequiredPrompt()
+	if got == "" {
+		t.Fatal("buildDelegationRequiredPrompt() = empty")
+	}
+	if want := "This run must use delegate_task"; !strings.Contains(got, want) {
+		t.Fatalf("required prompt = %q, want substring %q", got, want)
+	}
+}
+
+func TestAppendTemporarySystemPrompt(t *testing.T) {
+	got := appendTemporarySystemPrompt("base", "extra")
+	if got != "base\n\n---\n\nextra" {
+		t.Fatalf("appendTemporarySystemPrompt() = %q", got)
 	}
 }

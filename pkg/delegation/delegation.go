@@ -19,6 +19,7 @@ import (
 
 // ChildSpec describes one delegated task.
 type ChildSpec struct {
+	TaskIndex      int
 	Goal           string
 	ContextSummary string
 	WorkDir        string
@@ -135,6 +136,7 @@ func (r LoopChildRunner) Run(ctx context.Context, spec ChildSpec) (ChildResult, 
 		r.Events.Emit(orchestration.Event{
 			Kind: orchestration.EventChildStarted,
 			Payload: map[string]any{
+				"task_index":  spec.TaskIndex,
 				"session_key": spec.SessionKey,
 				"depth":       spec.Depth,
 				"parallel":    spec.ParallelGroup,
@@ -199,8 +201,10 @@ func (r LoopChildRunner) Run(ctx context.Context, spec ChildSpec) (ChildResult, 
 		r.Events.Emit(orchestration.Event{
 			Kind: orchestration.EventChildFinished,
 			Payload: map[string]any{
+				"task_index":   spec.TaskIndex,
 				"session_key":  sessionKey,
 				"depth":        spec.Depth,
+				"status":       childStatus(err),
 				"output_files": append([]string(nil), result.OutputFiles...),
 				"error":        errorString(err),
 			},
@@ -415,6 +419,16 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func childStatus(err error) string {
+	if err == nil {
+		return "completed"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "cancelled"
+	}
+	return "failed"
 }
 
 // ScriptedLoopFactory returns a loop factory useful for tests and local wiring.

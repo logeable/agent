@@ -100,6 +100,16 @@ func BuildRuntime(opts LoopOptions) (*Runtime, error) {
 		MaxConcurrent: cfg.Orchestration.Delegation.MaxConcurrent,
 		BlockedTools:  append([]string(nil), cfg.Orchestration.Delegation.BlockedTools...),
 	}
+	if cfg.Orchestration.Delegation.Enabled {
+		maxConcurrent := cfg.Orchestration.Delegation.MaxConcurrent
+		if maxConcurrent <= 0 {
+			maxConcurrent = delegation.DefaultMaxConcurrentChildren
+		}
+		loop.Model = delegation.ToolCallLimiterModel{
+			Inner:       loop.Model,
+			MaxChildren: maxConcurrent,
+		}
+	}
 	runtime.Delegation = &delegation.LoopChildRunner{
 		Factory:  loopFactory,
 		Policy:   delegationPolicy,
@@ -109,6 +119,14 @@ func BuildRuntime(opts LoopOptions) (*Runtime, error) {
 	runtime.Batch = &delegation.BatchRunner{
 		Runner: runtime.Delegation,
 		Policy: delegationPolicy,
+	}
+	if cfg.Orchestration.Delegation.Enabled {
+		loop.Tools.Register(delegation.Tool{
+			Runner:        runtime.Delegation,
+			Batch:         runtime.Batch,
+			MaxConcurrent: cfg.Orchestration.Delegation.MaxConcurrent,
+			DefaultDepth:  1,
+		})
 	}
 
 	jobStore := automation.NewMemoryJobStore()
@@ -271,7 +289,7 @@ func DefaultCLIProfile() (*profile.Config, error) {
 			MaxIterations: agent.DefaultMaxIterations,
 		},
 		Tools: profile.ToolsConfig{
-			Enabled: []string{"read_file", "edit_file", "write_file", "bash", "web_fetch"},
+			Enabled: []string{"read_file", "edit_file", "write_file", "bash", "web_fetch", "delegate_task"},
 			ReadFile: profile.ReadFileToolConfig{
 				MaxBytes: 32 * 1024,
 			},
@@ -286,6 +304,7 @@ func DefaultCLIProfile() (*profile.Config, error) {
 		},
 		Orchestration: profile.OrchestrationConfig{
 			Delegation: profile.DelegationConfig{
+				Enabled:              true,
 				MaxDepth:             2,
 				MaxConcurrent:        2,
 				DefaultMaxIterations: agent.DefaultMaxIterations,

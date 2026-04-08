@@ -82,7 +82,7 @@ func BuildCapabilityGuidancePrompt(opts CapabilityGuidanceOptions) string {
 		parts = append(parts, "When skills are available, inspect and reuse them instead of reinventing known workflows.")
 	}
 	if opts.Delegation {
-		parts = append(parts, "Use delegation only when a task can be cleanly isolated; child work should stay scoped and summarized.")
+		parts = append(parts, BuildDelegationToolGuidancePrompt())
 	}
 	if opts.Automation {
 		parts = append(parts, "Automation runs execute without a live user present, so unattended tasks must be self-contained and directly deliverable.")
@@ -94,6 +94,11 @@ func BuildCapabilityGuidancePrompt(opts CapabilityGuidanceOptions) string {
 		return ""
 	}
 	return "# Capability Guidance\n" + strings.Join(parts, "\n")
+}
+
+// BuildDelegationToolGuidancePrompt returns the parent-side guidance for delegate_task.
+func BuildDelegationToolGuidancePrompt() string {
+	return "Use delegate_task only for isolated reasoning-heavy subtasks or parallel independent workstreams. Do not delegate a single direct tool call or a purely mechanical pipeline. When delegating, pass concrete context such as paths, errors, and constraints because child workers cannot see your conversation history. Parallel delegated tasks must be independent."
 }
 
 // BuildEnvironmentPrompt renders runtime environment facts for the main loop.

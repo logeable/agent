@@ -79,6 +79,7 @@ type model struct {
 	activity      string
 	busy          bool
 	streamingSeen bool
+	autoFollow    bool
 
 	lastContextEstimate int
 	lastContextBudget   int
@@ -185,6 +186,7 @@ func newModel(loop *agent.Loop, opts Options) model {
 		activeAssistantIdx: -1,
 		activeReasoningIdx: -1,
 		activeToolIdx:      -1,
+		autoFollow:         true,
 	}
 	return m
 }
@@ -312,10 +314,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
+		m.autoFollow = false
 		m.messageView.LineUp(3)
 		return m, nil
 	case tea.MouseButtonWheelDown:
 		m.messageView.LineDown(3)
+		m.autoFollow = m.messageView.AtBottom()
 		return m, nil
 	case tea.MouseButtonLeft:
 		if msg.Action == tea.MouseActionPress {
@@ -482,8 +486,12 @@ func (m *model) normalizeActiveAssistant() {
 }
 
 func (m *model) rebuildTranscript() {
+	shouldFollow := m.autoFollow || m.messageView.AtBottom()
 	m.messageView.SetContent(m.renderTranscript())
-	m.messageView.GotoBottom()
+	if shouldFollow {
+		m.messageView.GotoBottom()
+		m.autoFollow = true
+	}
 }
 
 func (m model) renderTranscript() string {
@@ -603,8 +611,12 @@ func (m *model) refreshLayout() {
 	bodyStyle := lipgloss.NewStyle()
 	m.messageView.Width = maxInt(20, m.width-bodyStyle.GetHorizontalFrameSize())
 	m.messageView.Height = maxInt(1, bodyHeight-bodyStyle.GetVerticalFrameSize())
+	shouldFollow := m.autoFollow || m.messageView.AtBottom()
 	m.messageView.SetContent(m.renderTranscript())
-	m.messageView.GotoBottom()
+	if shouldFollow {
+		m.messageView.GotoBottom()
+		m.autoFollow = true
+	}
 }
 
 func renderMessageBlock(block messageBlock, width int, reasoningExpanded bool, renderMarkdown bool) string {
