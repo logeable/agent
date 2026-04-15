@@ -123,6 +123,19 @@ go run ./cmd/agentcli \
   -m "请阅读 go.mod 并总结当前依赖"
 ```
 
+### 列出可用模型
+
+可以通过子命令直接列出当前 provider 暴露的模型：
+
+```bash
+go run ./cmd/agentcli models \
+  -provider openai \
+  -api-key "$OPENAI_API_KEY" \
+  -base-url https://api.openai.com/v1
+```
+
+如果不显式传 `-provider` / `-base-url` / `-api-key`，子命令会沿用 profile、环境变量和默认值的解析规则。
+
 ### 使用标准输入
 
 如果没有 `-m`，但标准输入有内容，标准输入会作为完整 user message：
@@ -161,6 +174,8 @@ git diff | go run ./cmd/agentcli \
 
 - `-m`
   单次消息模式
+- `models`
+  列出当前 provider 可用模型
 - `-profile`
   指定 profile 文件
 - `-provider`

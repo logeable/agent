@@ -177,6 +177,15 @@ type BuildOptions struct {
 	WorkDir      string
 }
 
+// ResolvedProviderConfig is the effective provider configuration after
+// profile defaults, runtime overrides, and environment variables are applied.
+type ResolvedProviderConfig struct {
+	Kind    string
+	BaseURL string
+	APIKey  string
+	Model   string
+}
+
 // Load reads and parses a TOML profile file.
 func Load(path string) (*Config, error) {
 	if strings.TrimSpace(path) == "" {
@@ -363,6 +372,56 @@ func positiveFloatOrDefault(value, fallback float64) float64 {
 }
 
 func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, error) {
+	resolved, err := c.ResolveProvider(opts)
+	if err != nil {
+		return nil, "", err
+	}
+	if resolved.Kind != "ollama" && strings.TrimSpace(resolved.APIKey) == "" {
+		return nil, "", fmt.Errorf("provider API key is required")
+	}
+	if strings.TrimSpace(resolved.Model) == "" {
+		return nil, "", fmt.Errorf("provider model is required")
+	}
+
+	switch resolved.Kind {
+	case "openai":
+		model, err := provider.NewOpenAICompatModel(provider.OpenAICompatConfig{
+			BaseURL: resolved.BaseURL,
+			APIKey:  resolved.APIKey,
+			Model:   resolved.Model,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return model, resolved.Model, nil
+	case "openai_response":
+		model, err := provider.NewOpenAIResponseModel(provider.OpenAIResponseConfig{
+			BaseURL: resolved.BaseURL,
+			APIKey:  resolved.APIKey,
+			Model:   resolved.Model,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return model, resolved.Model, nil
+	case "ollama":
+		model, err := provider.NewOllamaModel(provider.OllamaConfig{
+			BaseURL: resolved.BaseURL,
+			APIKey:  resolved.APIKey,
+			Model:   resolved.Model,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return model, resolved.Model, nil
+	default:
+		return nil, "", fmt.Errorf("unsupported provider kind %q", c.Provider.Kind)
+	}
+}
+
+// ResolveProvider computes the effective provider configuration without
+// requiring a model-backed loop to be constructed.
+func (c *Config) ResolveProvider(opts BuildOptions) (ResolvedProviderConfig, error) {
 	kind := strings.ToLower(strings.TrimSpace(firstNonEmpty(opts.ProviderKind, c.Provider.Kind)))
 	if kind == "" {
 		kind = "openai"
@@ -375,52 +434,14 @@ func (c *Config) buildModel(opts BuildOptions) (provider.ChatModel, string, erro
 		apiKeyEnvDefault = "OLLAMA_API_KEY"
 		modelEnvDefault = "OLLAMA_MODEL"
 	}
-	baseURL := firstNonEmpty(opts.BaseURL, c.Provider.BaseURL, os.Getenv(strings.TrimSuffix(apiKeyEnvDefault, "_API_KEY")+"_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), baseURLDefault)
+
 	apiKeyEnv := firstNonEmpty(c.Provider.APIKeyEnv, apiKeyEnvDefault)
-	apiKey := firstNonEmpty(opts.APIKey, c.Provider.APIKey, os.Getenv(apiKeyEnv))
-	modelName := firstNonEmpty(opts.Model, c.Provider.Model, os.Getenv(modelEnvDefault), os.Getenv("OPENAI_MODEL"))
-
-	if kind != "ollama" && strings.TrimSpace(apiKey) == "" {
-		return nil, "", fmt.Errorf("provider API key is required")
-	}
-	if strings.TrimSpace(modelName) == "" {
-		return nil, "", fmt.Errorf("provider model is required")
-	}
-
-	switch kind {
-	case "openai":
-		model, err := provider.NewOpenAICompatModel(provider.OpenAICompatConfig{
-			BaseURL: baseURL,
-			APIKey:  apiKey,
-			Model:   modelName,
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		return model, modelName, nil
-	case "openai_response":
-		model, err := provider.NewOpenAIResponseModel(provider.OpenAIResponseConfig{
-			BaseURL: baseURL,
-			APIKey:  apiKey,
-			Model:   modelName,
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		return model, modelName, nil
-	case "ollama":
-		model, err := provider.NewOllamaModel(provider.OllamaConfig{
-			BaseURL: baseURL,
-			APIKey:  apiKey,
-			Model:   modelName,
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		return model, modelName, nil
-	default:
-		return nil, "", fmt.Errorf("unsupported provider kind %q", c.Provider.Kind)
-	}
+	return ResolvedProviderConfig{
+		Kind:    kind,
+		BaseURL: firstNonEmpty(opts.BaseURL, c.Provider.BaseURL, os.Getenv(strings.TrimSuffix(apiKeyEnvDefault, "_API_KEY")+"_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), baseURLDefault),
+		APIKey:  firstNonEmpty(opts.APIKey, c.Provider.APIKey, os.Getenv(apiKeyEnv)),
+		Model:   firstNonEmpty(opts.Model, c.Provider.Model, os.Getenv(modelEnvDefault), os.Getenv("OPENAI_MODEL")),
+	}, nil
 }
 
 func (c *Config) buildRegistry(
